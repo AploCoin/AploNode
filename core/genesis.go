@@ -234,10 +234,10 @@ func (e *GenesisMismatchError) Error() string {
 // SetupGenesisBlock writes or updates the genesis block in db.
 // The block that will be used is:
 //
-//                          genesis == nil       genesis != nil
-//                       +------------------------------------------
-//     db has no genesis |  main-net default  |  genesis
-//     db has genesis    |  from DB           |  genesis (if compatible)
+//	                     genesis == nil       genesis != nil
+//	                  +------------------------------------------
+//	db has no genesis |  main-net default  |  genesis
+//	db has genesis    |  from DB           |  genesis (if compatible)
 //
 // The stored chain configuration will be updated if it is compatible (i.e. does not
 // specify a fork block below the local head block). In case of a conflict, the
@@ -444,14 +444,35 @@ func (g *Genesis) MustCommit(db ethdb.Database) *types.Block {
 
 // DefaultGenesisBlock returns the Ethereum main net genesis block.
 func DefaultGenesisBlock() *Genesis {
+	gaploCode := common.FromHex(params.GAPLO)
+
+	initialSupply := new(big.Int)
+	initialSupply.SetString("1000000000000000000000000000000000000000000000000000000000000000000000000000", 10)
+	storageSlot := common.HexToHash("0x0b063ea9a1c5a5f474216f628fdf6a692512b36dff1289ce954d014cd1884625")
+	balance, _ := new(big.Int).SetString("1000000000000000000000000000000000000", 10)
 	return &Genesis{
 		Config:     params.MainnetChainConfig,
 		Nonce:      66,
-		ExtraData:  hexutil.MustDecode("0x11bbe8db4e347b4e8c937c1c8370e4b5ed33adb3db69cbdb7a38e1e50b1b82fa"),
-		GasLimit:   5000,
-		Difficulty: big.NewInt(17179869184),
-		Alloc:      decodePrealloc(mainnetAllocData),
-	}
+		ExtraData:  []byte{}, //hexutil.MustDecode("0x11bbe8db4e347b4e8c937c1c8370e4b5ed33adb3db69cbdb7a38e1e50b1b82fa"),
+		GasLimit:   30000000,
+		Difficulty: big.NewInt(131072),
+		Alloc: map[common.Address]GenesisAccount{
+			// Pre-deploy GAplo contract
+			params.GAploContractAddress: {
+				Code: gaploCode,
+				Storage: map[common.Hash]common.Hash{
+					// Total supply storage slot
+					common.HexToHash("0x2"): common.BigToHash(initialSupply),
+					// Initial balance for genesis address storage slot
+					// Calculate storage slot for _balances[initialHolder]
+					storageSlot: common.BigToHash(initialSupply),
+				},
+				Balance: big.NewInt(0),
+			},
+			common.HexToAddress("0x67adcF8c25c88aF0Df3caB522C9dD5b11d017aca"): {
+				Balance: balance,
+			},
+		}}
 }
 
 // DefaultRopstenGenesisBlock returns the Ropsten network genesis block.

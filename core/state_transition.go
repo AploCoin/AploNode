@@ -26,6 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -42,8 +43,10 @@ The state transitioning model does all the necessary work to work out a valid ne
 3) Create a new state object if the recipient is \0*32
 4) Value transfer
 == If contract creation ==
-  4a) Attempt to run transaction data
-  4b) If valid, use result as code for the new state object
+
+	4a) Attempt to run transaction data
+	4b) If valid, use result as code for the new state object
+
 == end ==
 5) Run Script section
 6) Derive new state root
@@ -190,6 +193,27 @@ func (st *StateTransition) to() common.Address {
 }
 
 func (st *StateTransition) buyGas() error {
+	// Call GAplo balanceOf
+	gaploInput := crypto.Keccak256([]byte("balanceOf(address)"))[0:4]
+	paddedAddress := common.LeftPadBytes(st.msg.From().Bytes(), 32)
+	gaploInput = append(gaploInput, paddedAddress...)
+
+	balanceRet, _, err := st.evm.Call(
+		vm.AccountRef(st.msg.From()),
+		params.GAploContractAddress,
+		gaploInput,
+		1000000000000000000,
+		big.NewInt(0),
+	)
+	if err != nil {
+		fmt.Println("line 233")
+		return err
+	}
+
+	balance := new(big.Int).SetBytes(balanceRet)
+	log.Info("BuyGas", "gaplo balance", balance)
+
+	log.Info("buyGas", "msg", st.msg)
 	mgval := new(big.Int).SetUint64(st.msg.Gas())
 	mgval = mgval.Mul(mgval, st.gasPrice)
 	balanceCheck := mgval
@@ -198,16 +222,37 @@ func (st *StateTransition) buyGas() error {
 		balanceCheck = balanceCheck.Mul(balanceCheck, st.gasFeeCap)
 		balanceCheck.Add(balanceCheck, st.value)
 	}
-	if have, want := st.state.GetBalance(st.msg.From()), balanceCheck; have.Cmp(want) < 0 {
+	if have, want := balance, balanceCheck; have.Cmp(want) < 0 {
 		return fmt.Errorf("%w: address %v have %v want %v", ErrInsufficientFunds, st.msg.From().Hex(), have, want)
 	}
 	if err := st.gp.SubGas(st.msg.Gas()); err != nil {
 		return err
 	}
+
+	// Transfer GAplo tokens to coinbase for gas payment
+	transferInput := crypto.Keccak256([]byte("takeFee(uint256)"))[0:4]
+	//paddedCoinbase := common.LeftPadBytes(st.evm.Context.Coinbase.Bytes(), 32)
+	fmt.Println(mgval)
+	paddedAmount := common.LeftPadBytes(mgval.Bytes(), 32)
+	//from := common.LeftPadBytes(st.msg.From().Bytes(), 32)
+	transferInput = append(transferInput, paddedAmount...)
+
+	_, _, err = st.evm.Call(
+		vm.AccountRef(st.msg.From()),
+		params.GAploContractAddress,
+		transferInput,
+		1000000000000000000,
+		big.NewInt(0),
+	)
+	if err != nil {
+		log.Info("Error buying gas", "err", err.Error)
+		return err
+	}
+
 	st.gas += st.msg.Gas()
 
 	st.initialGas = st.msg.Gas()
-	st.state.SubBalance(st.msg.From(), mgval)
+	//st.state.SubBalance(st.msg.From(), mgval)
 	return nil
 }
 
@@ -262,13 +307,13 @@ func (st *StateTransition) preCheck() error {
 // TransitionDb will transition the state by applying the current message and
 // returning the evm execution result with following fields.
 //
-// - used gas:
-//      total gas used (including gas being refunded)
-// - returndata:
-//      the returned data from evm
-// - concrete execution error:
-//      various **EVM** error which aborts the execution,
-//      e.g. ErrOutOfGas, ErrExecutionReverted
+//   - used gas:
+//     total gas used (including gas being refunded)
+//   - returndata:
+//     the returned data from evm
+//   - concrete execution error:
+//     various **EVM** error which aborts the execution,
+//     e.g. ErrOutOfGas, ErrExecutionReverted
 //
 // However if any consensus issue encountered, return the error directly with
 // nil evm execution result.
