@@ -448,7 +448,7 @@ func DefaultGenesisBlock() *Genesis {
 
 	initialSupply := new(big.Int)
 	initialSupply.SetString("1000000000000000000000000000000000000000000000000000000000000000000000000000", 10)
-	storageSlot := common.HexToHash("0x0b063ea9a1c5a5f474216f628fdf6a692512b36dff1289ce954d014cd1884625")
+	storageSlot := common.HexToHash("0x37d183ac349a4a6d608e7adcb375417a92489ee41c2dacdb148628a3781b7e93")
 	//balance, _ := new(big.Int).SetString("1000000000000000000000000000000000000", 10)
 	return &Genesis{
 		Config:     params.MainnetChainConfig,
