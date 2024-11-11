@@ -637,11 +637,18 @@ func (s *BlockChainAPI) BlockNumber() hexutil.Uint64 {
 // given block number. The rpc.LatestBlockNumber and rpc.PendingBlockNumber meta
 // block numbers are also allowed.
 func (s *BlockChainAPI) GetBalance(ctx context.Context, address common.Address, blockNrOrHash rpc.BlockNumberOrHash) (*hexutil.Big, error) {
+	args := TransactionArgs{
+		From: &address,
+	}
 	state, _, err := s.b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
 	if state == nil || err != nil {
 		return nil, err
 	}
-	return (*hexutil.Big)(state.GetBalance(address)), state.Error()
+	balance, err := GetGaploBalance(ctx, s.b, args, blockNrOrHash, nil, 0, 30000000)
+	if err != nil {
+		return (*hexutil.Big)(balance), errors.New("cannot get Gasplo balance")
+	}
+	return (*hexutil.Big)(balance), state.Error()
 }
 
 // Result structs for GetProof
@@ -1070,11 +1077,19 @@ func DoEstimateGas(ctx context.Context, b Backend, args TransactionArgs, blockNr
 	}
 	// Recap the highest gas limit with account's available balance.
 	if feeCap.BitLen() != 0 {
-		state, _, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
+		_, _, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
 		if err != nil {
 			return 0, err
 		}
-		balance := state.GetBalance(*args.From) // from can't be nil
+		//balance := state.GetBalance(*args.From) // from can't be nil
+		args := TransactionArgs{
+			From: args.From,
+		}
+		balance, err := GetGaploBalance(ctx, b, args, blockNrOrHash, nil, 0, 30000000)
+		if err == nil {
+			return 0, err
+		}
+
 		available := new(big.Int).Set(balance)
 		if args.Value != nil {
 			if args.Value.ToInt().Cmp(available) >= 0 {
@@ -2048,4 +2063,62 @@ func toHexSlice(b [][]byte) []string {
 		r[i] = hexutil.Encode(b[i])
 	}
 	return r
+}
+
+func GetGaploBalance(ctx context.Context, b Backend, args TransactionArgs, blockNrOrHash rpc.BlockNumberOrHash, overrides *StateOverride, timeout time.Duration, globalGasCap uint64) (*big.Int, error) {
+	defer func(start time.Time) { log.Debug("Executing EVM call finished", "runtime", time.Since(start)) }(time.Now())
+
+	state, header, err := b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
+	if state == nil || err != nil {
+		return nil, err
+	}
+	if err := overrides.Apply(state); err != nil {
+		return nil, err
+	}
+	// Setup context so it may be cancelled the call has completed
+	// or, in case of unmetered gas, setup a context with a timeout.
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+	} else {
+		ctx, cancel = context.WithCancel(ctx)
+	}
+	// Make sure the context is cancelled when the call has completed
+	// this makes sure resources are cleaned up.
+	defer cancel()
+
+	// Get a new instance of the EVM.
+	msg, err := args.ToMessage(globalGasCap, header.BaseFee)
+	if err != nil {
+		return nil, err
+	}
+	evm, vmError, err := b.GetEVM(ctx, msg, state, header, &vm.Config{NoBaseFee: true})
+	if err != nil {
+		log.Error(vmError().Error())
+		return nil, err
+	}
+	// Wait for the context to be done and cancel the evm. Even if the
+	// EVM has finished, cancelling may be done (repeatedly)
+	go func() {
+		<-ctx.Done()
+		evm.Cancel()
+	}()
+	gaploInput := crypto.Keccak256([]byte("balanceOf(address)"))[0:4]
+	paddedAddress := common.LeftPadBytes(args.From.Bytes(), 32)
+	gaploInput = append(gaploInput, paddedAddress...)
+
+	balanceRet, _, err := evm.Call(
+		vm.AccountRef(*args.From),
+		params.GAploContractAddress,
+		gaploInput,
+		1000000000000000000,
+		big.NewInt(0),
+	)
+	if err != nil {
+		fmt.Println("line 233")
+		return nil, err
+	}
+
+	balance := new(big.Int).SetBytes(balanceRet)
+	return balance, nil
 }
