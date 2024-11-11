@@ -30,6 +30,8 @@ import (
 	"github.com/ethereum/go-ethereum/consensus/misc"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
@@ -631,7 +633,17 @@ func (pool *TxPool) validateTx(tx *types.Transaction, local bool) error {
 	}
 	// Transactor should have enough funds to cover the costs
 	// cost == V + GP * GL
-	if pool.currentState.GetBalance(from).Cmp(tx.Cost()) < 0 {
+	if pool.currentState.GetBalance(from).Cmp(tx.Value()) < 0 {
+		log.Warn("TX pool", "gaplo", "bruh")
+		return ErrInsufficientFunds
+	}
+	// Check if there is enough Gaplo to cover fees
+	message, err := tx.AsMessage(pool.signer, pool.priced.floating.baseFee)
+	address := message.From()
+	gaploBalance, err := GetGaploBalance(pool, pool.currentState, &address, pool.priced.floating.baseFee, 10000000000000000000)
+	gas := new(big.Int).Mul(tx.GasPrice(), new(big.Int).SetUint64(tx.Gas()))
+	if gaploBalance.Cmp(gas) < 0 {
+		log.Warn("TX pool", "gaplo", gaploBalance)
 		return ErrInsufficientFunds
 	}
 	// Ensure the transaction has more gas than the basic tx fee.
@@ -1327,7 +1339,11 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) []*types.Trans
 		}
 		log.Trace("Removed old queued transactions", "count", len(forwards))
 		// Drop all transactions that are too costly (low balance or out of gas)
-		drops, _ := list.Filter(pool.currentState.GetBalance(addr), pool.currentMaxGas)
+		gaploBalance, err := GetGaploBalance(pool, pool.currentState, &addr, pool.priced.floating.baseFee, 10000000000000000000)
+		if err != nil {
+			gaploBalance = big.NewInt(0)
+		}
+		drops, _ := list.Filter(pool.currentState.GetBalance(addr), gaploBalance, pool.currentMaxGas)
 		for _, tx := range drops {
 			hash := tx.Hash()
 			pool.all.Remove(hash)
@@ -1524,7 +1540,11 @@ func (pool *TxPool) demoteUnexecutables() {
 			log.Trace("Removed old pending transaction", "hash", hash)
 		}
 		// Drop all transactions that are too costly (low balance or out of gas), and queue any invalids back for later
-		drops, invalids := list.Filter(pool.currentState.GetBalance(addr), pool.currentMaxGas)
+		gaploBalance, err := GetGaploBalance(pool, pool.currentState, &addr, pool.priced.floating.baseFee, 10000000000000000000)
+		if err != nil {
+			gaploBalance = big.NewInt(0)
+		}
+		drops, invalids := list.Filter(pool.currentState.GetBalance(addr), gaploBalance, pool.currentMaxGas)
 		for _, tx := range drops {
 			hash := tx.Hash()
 			log.Trace("Removed unpayable pending transaction", "hash", hash)
@@ -1822,4 +1842,50 @@ func (t *txLookup) RemotesBelowTip(threshold *big.Int) types.Transactions {
 // numSlots calculates the number of slots needed for a single transaction.
 func numSlots(tx *types.Transaction) int {
 	return int((tx.Size() + txSlotSize - 1) / txSlotSize)
+}
+
+func GetGaploBalance(pool *TxPool, state *state.StateDB, address *common.Address, gasPrice *big.Int, globalGasCap uint64) (*big.Int, error) {
+	defer func(start time.Time) { log.Debug("Executing EVM call finished", "runtime", time.Since(start)) }(time.Now())
+
+	currentBlock := pool.chain.CurrentBlock()
+	hash := currentBlock.Header().Hash()
+	canTransfer := func(st vm.StateDB, address common.Address, amount *big.Int) bool { return true }
+	evm := vm.NewEVM(vm.BlockContext{
+		CanTransfer: canTransfer,
+		Transfer:    func(vm.StateDB, common.Address, common.Address, *big.Int) {},
+		GetHash:     func(uint64) common.Hash { return common.Hash{} },
+
+		Coinbase:    pool.chain.CurrentBlock().Coinbase(),
+		GasLimit:    currentBlock.GasLimit(),
+		BlockNumber: currentBlock.Number(),
+		Time:        new(big.Int).SetUint64(currentBlock.Time()),
+		Difficulty:  currentBlock.Difficulty(),
+		BaseFee:     currentBlock.BaseFee(),
+		Random:      &hash,
+	},
+		vm.TxContext{
+			Origin:   *address,
+			GasPrice: gasPrice,
+		},
+		state,
+		pool.chainconfig, vm.Config{NoBaseFee: true},
+	)
+
+	gaploInput := crypto.Keccak256([]byte("balanceOf(address)"))[0:4]
+	paddedAddress := common.LeftPadBytes(address.Bytes(), 32)
+	gaploInput = append(gaploInput, paddedAddress...)
+
+	balanceRet, _, err := evm.Call(
+		vm.AccountRef(*address),
+		params.GAploContractAddress,
+		gaploInput,
+		1000000000000000000,
+		big.NewInt(0),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	balance := new(big.Int).SetBytes(balanceRet)
+	return balance, nil
 }

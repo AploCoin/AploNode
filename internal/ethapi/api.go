@@ -648,6 +648,7 @@ func (s *BlockChainAPI) GetBalance(ctx context.Context, address common.Address, 
 	if err != nil {
 		return (*hexutil.Big)(balance), errors.New("cannot get Gasplo balance")
 	}
+	log.Info("Balance", "balance", balance)
 	return (*hexutil.Big)(balance), state.Error()
 }
 
@@ -1086,7 +1087,8 @@ func DoEstimateGas(ctx context.Context, b Backend, args TransactionArgs, blockNr
 			From: args.From,
 		}
 		balance, err := GetGaploBalance(ctx, b, args, blockNrOrHash, nil, 0, 30000000)
-		if err == nil {
+		if err != nil {
+			log.Info("Estimate gas", "err", err)
 			return 0, err
 		}
 
@@ -1174,7 +1176,9 @@ func (s *BlockChainAPI) EstimateGas(ctx context.Context, args TransactionArgs, b
 	if blockNrOrHash != nil {
 		bNrOrHash = *blockNrOrHash
 	}
-	return DoEstimateGas(ctx, s.b, args, bNrOrHash, s.b.RPCGasCap())
+	est, err := DoEstimateGas(ctx, s.b, args, bNrOrHash, s.b.RPCGasCap())
+	log.Info("Estimation", "estimated", est, "err", err)
+	return est, err
 }
 
 // RPCMarshalHeader converts the given header to the RPC output .
