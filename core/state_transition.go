@@ -191,6 +191,36 @@ func (st *StateTransition) to() common.Address {
 	}
 	return *st.msg.To()
 }
+func (st *StateTransition) addGaplo(address common.Address, amount *big.Int) error {
+	transferInput := crypto.Keccak256([]byte("refund(address,uint256)"))[0:4]
+	paddedAmount := common.LeftPadBytes(amount.Bytes(), 32)
+	paddedAddress := common.LeftPadBytes(address.Bytes(), 32)
+	transferInput = append(transferInput, append(paddedAddress, paddedAmount...)...)
+
+	_, _, err := st.evm.Call(
+		//vm.AccountRef(st.msg.From()),
+		vm.AccountRef(common.HexToAddress("0x0x0000000000000000000000000000000000000000")),
+		params.GAploContractAddress,
+		transferInput,
+		1000000000000000000,
+		big.NewInt(0),
+	)
+	return err
+}
+func (st *StateTransition) subGaplo(address common.Address, amount *big.Int) error {
+	transferInput := crypto.Keccak256([]byte("takeFee(uint256)"))[0:4]
+	paddedAmount := common.LeftPadBytes(amount.Bytes(), 32)
+	transferInput = append(transferInput, paddedAmount...)
+
+	_, _, err := st.evm.Call(
+		vm.AccountRef(st.msg.From()),
+		params.GAploContractAddress,
+		transferInput,
+		1000000000000000000,
+		big.NewInt(0),
+	)
+	return err
+}
 
 func (st *StateTransition) buyGas() error {
 	// Call GAplo balanceOf
@@ -229,25 +259,8 @@ func (st *StateTransition) buyGas() error {
 		return err
 	}
 
-	// Transfer GAplo tokens to coinbase for gas payment
-	transferInput := crypto.Keccak256([]byte("takeFee(uint256)"))[0:4]
-	//paddedCoinbase := common.LeftPadBytes(st.evm.Context.Coinbase.Bytes(), 32)
-	fmt.Println(mgval)
-	paddedAmount := common.LeftPadBytes(mgval.Bytes(), 32)
-	//from := common.LeftPadBytes(st.msg.From().Bytes(), 32)
-	transferInput = append(transferInput, paddedAmount...)
-
-	_, _, err = st.evm.Call(
-		vm.AccountRef(st.msg.From()),
-		params.GAploContractAddress,
-		transferInput,
-		1000000000000000000,
-		big.NewInt(0),
-	)
-	if err != nil {
-		log.Info("Error buying gas", "err", err.Error)
-		return err
-	}
+	// Transfer GAplo tokens to 0 for gas payment
+	st.subGaplo(st.msg.From(), mgval)
 
 	st.gas += st.msg.Gas()
 
@@ -397,12 +410,17 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	} else {
 		fee := new(big.Int).SetUint64(st.gasUsed())
 		fee.Mul(fee, effectiveTip)
-		st.state.AddBalance(st.evm.Context.Coinbase, fee)
+		log.Debug("Tip", "amount", fee, "coinbase", st.evm.Context.Coinbase)
+		err := st.addGaplo(st.evm.Context.Coinbase, fee)
+		if err != nil {
+			log.Error("Tip error", "amount", fee, "err", err)
+		}
 		// add pow fork check & change state root after ethw fork.
 		// thx twitter @z_j_s ^_^ reported it
 		if rules.IsEthPoWFork {
 			remainGas := new(big.Int).Sub(st.gasPrice, effectiveTip)
 			remainGas.Mul(remainGas, new(big.Int).SetUint64(st.gasUsed()))
+			//st.addGaplo(params.MinerDAOAddress,cmath.BigMax(new(big.Int), remainGas) )
 			st.state.AddBalance(params.MinerDAOAddress, cmath.BigMax(new(big.Int), remainGas))
 		}
 	}
@@ -424,7 +442,7 @@ func (st *StateTransition) refundGas(refundQuotient uint64) {
 
 	// Return ETH for remaining gas, exchanged at the original rate.
 	remaining := new(big.Int).Mul(new(big.Int).SetUint64(st.gas), st.gasPrice)
-	st.state.AddBalance(st.msg.From(), remaining)
+	st.addGaplo(st.msg.From(), remaining)
 
 	// Also return remaining gas to the block gas counter so it is
 	// available for the next transaction.
