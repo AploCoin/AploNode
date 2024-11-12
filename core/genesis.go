@@ -445,6 +445,7 @@ func (g *Genesis) MustCommit(db ethdb.Database) *types.Block {
 // DefaultGenesisBlock returns the Ethereum main net genesis block.
 func DefaultGenesisBlock() *Genesis {
 	gaploCode := common.FromHex(params.GAPLO)
+	aploCode := common.FromHex("00")
 
 	initialSupply := new(big.Int)
 	initialSupply.SetString("1000000000000000000000000000000000000000000000000000000000000000000000000000", 10)
@@ -467,6 +468,11 @@ func DefaultGenesisBlock() *Genesis {
 					// Calculate storage slot for _balances[initialHolder]
 					storageSlot: common.BigToHash(initialSupply),
 				},
+				Balance: big.NewInt(0),
+			},
+			params.AploContractAddress: {
+				Code:    aploCode,
+				Storage: map[common.Hash]common.Hash{},
 				Balance: big.NewInt(0),
 			},
 			//common.HexToAddress("0x67adcF8c25c88aF0Df3caB522C9dD5b11d017aca"): {

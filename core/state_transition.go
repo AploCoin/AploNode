@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"reflect"
 
 	"github.com/ethereum/go-ethereum/common"
 	cmath "github.com/ethereum/go-ethereum/common/math"
@@ -393,10 +394,10 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 
 	if !rules.IsLondon {
 		// Before EIP-3529: refunds were capped to gasUsed / 2
-		st.refundGas(params.RefundQuotient)
+		st.refundGas(params.RefundQuotient, vmerr)
 	} else {
 		// After EIP-3529: refunds are capped to gasUsed / 5
-		st.refundGas(params.RefundQuotientEIP3529)
+		st.refundGas(params.RefundQuotientEIP3529, vmerr)
 	}
 	effectiveTip := st.gasPrice
 	if rules.IsLondon {
@@ -432,7 +433,7 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	}, nil
 }
 
-func (st *StateTransition) refundGas(refundQuotient uint64) {
+func (st *StateTransition) refundGas(refundQuotient uint64, vmerr error) {
 	// Apply refund counter, capped to a refund quotient
 	refund := st.gasUsed() / refundQuotient
 	if refund > st.state.GetRefund() {
@@ -440,8 +441,26 @@ func (st *StateTransition) refundGas(refundQuotient uint64) {
 	}
 	st.gas += refund
 
-	// Return ETH for remaining gas, exchanged at the original rate.
+	// Return ETH for remaining gas, exchanged at the original rate. Add mining reward
 	remaining := new(big.Int).Mul(new(big.Int).SetUint64(st.gas), st.gasPrice)
+	// Calculate mining reward
+	if vmerr == nil {
+		if len(st.data) >= 4 {
+			selector := st.data[0:4]
+			log.Warn("Refund", "selector", selector, "to", st.to(), "to eq", st.to() == params.GAploContractAddress, "selector eq", reflect.DeepEqual(selector, params.GAploMineSelector[0:4]))
+			if st.to() == params.GAploContractAddress {
+				if reflect.DeepEqual(selector, params.GAploMineSelector[0:4]) {
+					gaploUsed := new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), st.gasPrice)
+					gaploReward := new(big.Int).Div(gaploUsed, params.GAploRewardCoef)
+					if st.evm.Context.Coinbase != st.msg.From() {
+						gaploReward = new(big.Int).Add(gaploUsed, gaploReward)
+					}
+					remaining = new(big.Int).Add(remaining, gaploReward)
+				}
+			}
+		}
+	}
+	log.Warn("Refund", "amount", remaining)
 	st.addGaplo(st.msg.From(), remaining)
 
 	// Also return remaining gas to the block gas counter so it is
