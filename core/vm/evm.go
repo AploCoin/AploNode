@@ -17,12 +17,14 @@
 package vm
 
 import (
+	"encoding/hex"
 	"math/big"
 	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
 )
@@ -222,12 +224,30 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 			ret, err = nil, nil // gas is unchanged
 		} else {
 			addrCopy := addr
-			// If the account has no code, we can abort here
-			// The depth-check is already done, and precompiles handled above
-			contract := NewContract(caller, AccountRef(addrCopy), value, gas)
-			contract.SetCallCode(&addrCopy, evm.StateDB.GetCodeHash(addrCopy), code)
-			ret, err = evm.interpreter.Run(contract, input, false)
-			gas = contract.Gas
+			if addrCopy == params.AploContractAddress {
+				if len(input) < 4 {
+					err = ErrExecutionReverted
+					ret = nil
+				}
+				selector := hex.EncodeToString(input[0:4])
+				var gasUsed uint64
+
+				function, ok := AploFunctions[selector]
+				if caller != nil && ok {
+					log.Warn("APLO", "selector", selector)
+					ret, gasUsed, err = function(evm.StateDB, caller, input, gas)
+					gas -= gasUsed
+				} else {
+					err = ErrExecutionReverted
+				}
+			} else {
+				// If the account has no code, we can abort here
+				// The depth-check is already done, and precompiles handled above
+				contract := NewContract(caller, AccountRef(addrCopy), value, gas)
+				contract.SetCallCode(&addrCopy, evm.StateDB.GetCodeHash(addrCopy), code)
+				ret, err = evm.interpreter.Run(contract, input, false)
+				gas = contract.Gas
+			}
 		}
 	}
 	// When an error was returned by the EVM or when setting the creation code

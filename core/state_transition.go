@@ -200,7 +200,7 @@ func (st *StateTransition) addGaplo(address common.Address, amount *big.Int) err
 
 	_, _, err := st.evm.Call(
 		//vm.AccountRef(st.msg.From()),
-		vm.AccountRef(common.HexToAddress("0x0x0000000000000000000000000000000000000000")),
+		vm.AccountRef(common.HexToAddress("0x0000000000000000000000000000000000000000")),
 		params.GAploContractAddress,
 		transferInput,
 		1000000000000000000,

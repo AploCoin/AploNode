@@ -31,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/consensus/misc"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
@@ -337,34 +338,35 @@ func (ethash *Ethash) CalcDifficulty(chain consensus.ChainHeaderReader, time uin
 // the difficulty that a new block should have when created at time
 // given the parent block's time and difficulty.
 func CalcDifficulty(config *params.ChainConfig, time uint64, parent *types.Header) *big.Int {
-	next := new(big.Int).Add(parent.Number, big1)
-	switch {
-	case config.IsEthPoWFork(next):
-		if config.EthPoWForkBlock != nil && big.NewInt(0).Add(config.EthPoWForkBlock, big.NewInt(2048)).Cmp(next) == 0 {
-			return params.ETHWStartDifficulty //Reset difficulty
-		}
+	//next := new(big.Int).Add(parent.Number, big1)
+	return calcDifficultyHomestead(time, parent)
+	//switch {
+	//case config.IsEthPoWFork(next):
+	//	if config.EthPoWForkBlock != nil && big.NewInt(0).Add(config.EthPoWForkBlock, big.NewInt(2048)).Cmp(next) == 0 {
+	//		return params.ETHWStartDifficulty //Reset difficulty
+	//	}
 
-		if config.EthPoWForkBlock != nil && config.EthPoWForkBlock.Cmp(next) == 0 {
-			return big.NewInt(1) //Reset
-		}
-		return calcDifficultyEthPoW(time, parent)
-	case config.IsGrayGlacier(next):
-		return calcDifficultyEip5133(time, parent)
-	case config.IsArrowGlacier(next):
-		return calcDifficultyEip4345(time, parent)
-	case config.IsLondon(next):
-		return calcDifficultyEip3554(time, parent)
-	case config.IsMuirGlacier(next):
-		return calcDifficultyEip2384(time, parent)
-	case config.IsConstantinople(next):
-		return calcDifficultyConstantinople(time, parent)
-	case config.IsByzantium(next):
-		return calcDifficultyByzantium(time, parent)
-	case config.IsHomestead(next):
-		return calcDifficultyHomestead(time, parent)
-	default:
-		return calcDifficultyFrontier(time, parent)
-	}
+	//	if config.EthPoWForkBlock != nil && config.EthPoWForkBlock.Cmp(next) == 0 {
+	//		return big.NewInt(1) //Reset
+	//	}
+	//	return calcDifficultyEthPoW(time, parent)
+	//case config.IsGrayGlacier(next):
+	//	return calcDifficultyEip5133(time, parent)
+	//case config.IsArrowGlacier(next):
+	//	return calcDifficultyEip4345(time, parent)
+	//case config.IsLondon(next):
+	//	return calcDifficultyEip3554(time, parent)
+	//case config.IsMuirGlacier(next):
+	//	return calcDifficultyEip2384(time, parent)
+	//case config.IsConstantinople(next):
+	//	return calcDifficultyConstantinople(time, parent)
+	//case config.IsByzantium(next):
+	//	return calcDifficultyByzantium(time, parent)
+	//case config.IsHomestead(next):
+	//	return calcDifficultyHomestead(time, parent)
+	//default:
+	//	return calcDifficultyFrontier(time, parent)
+	//}
 }
 
 // Some weird constants to avoid constant memory allocs for them.
@@ -416,6 +418,7 @@ func calcDifficultyEthPoW(time uint64, parent *types.Header) *big.Int {
 	if x.Cmp(params.MinimumDifficulty) < 0 {
 		x.Set(params.MinimumDifficulty)
 	}
+	log.Warn("Difficulty", "value", x)
 	return x
 }
 
@@ -528,6 +531,7 @@ func calcDifficultyHomestead(time uint64, parent *types.Header) *big.Int {
 		y.Exp(big2, y, nil)
 		x.Add(x, y)
 	}
+	log.Warn("Difficulty", "value", x)
 	return x
 }
 
