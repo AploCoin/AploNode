@@ -139,6 +139,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	if _, ok := genesisErr.(*params.ConfigCompatError); genesisErr != nil && !ok {
 		return nil, genesisErr
 	}
+	//log.Error("DAO", "data", chainConfig.DAOForkBlock)
 
 	if !config.IsNetworkIdSet && chainConfig != nil {
 		if chainConfig.ChainID_ALT != nil && chainConfig.EthPoWForkSupport {
