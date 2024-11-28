@@ -1,9 +1,6 @@
-## Go Ethereum
+## Aplo
 
 Official Golang implementation of the Aplo protocol, based on the EthereumPOW fork.
-
-Automated builds are available for stable releases and the unstable master branch. Binary
-archives are published at https://geth.ethereum.org/downloads/.
 
 ## Building the source
 
