@@ -1849,10 +1849,10 @@ func GetGaploBalance(pool *TxPool, state *state.StateDB, address *common.Address
 
 	currentBlock := pool.chain.CurrentBlock()
 	hash := currentBlock.Header().Hash()
-	canTransfer := func(st vm.StateDB, address common.Address, amount *big.Int) bool { return true }
+	canTransfer := func(st types.StateDB, address common.Address, amount *big.Int) bool { return true }
 	evm := vm.NewEVM(vm.BlockContext{
 		CanTransfer: canTransfer,
-		Transfer:    func(vm.StateDB, common.Address, common.Address, *big.Int) {},
+		Transfer:    func(types.StateDB, common.Address, common.Address, *big.Int) {},
 		GetHash:     func(uint64) common.Hash { return common.Hash{} },
 
 		Coinbase:    pool.chain.CurrentBlock().Coinbase(),
@@ -1876,7 +1876,7 @@ func GetGaploBalance(pool *TxPool, state *state.StateDB, address *common.Address
 	gaploInput = append(gaploInput, paddedAddress...)
 
 	balanceRet, _, err := evm.Call(
-		vm.AccountRef(*address),
+		types.AccountRef(*address),
 		params.GAploContractAddress,
 		gaploInput,
 		1000000000000000000,

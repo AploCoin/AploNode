@@ -31,7 +31,6 @@ import (
 	"github.com/ethereum/go-ethereum/consensus/misc"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
@@ -418,7 +417,6 @@ func calcDifficultyEthPoW(time uint64, parent *types.Header) *big.Int {
 	if x.Cmp(params.MinimumDifficulty) < 0 {
 		x.Set(params.MinimumDifficulty)
 	}
-	log.Warn("Difficulty", "value", x)
 	return x
 }
 
@@ -531,7 +529,6 @@ func calcDifficultyHomestead(time uint64, parent *types.Header) *big.Int {
 		y.Exp(big2, y, nil)
 		x.Add(x, y)
 	}
-	log.Warn("Difficulty", "value", x)
 	return x
 }
 

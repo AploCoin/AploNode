@@ -1,15 +1,14 @@
-package vm
+package aplo
 
 import (
 	"encoding/hex"
+	"errors"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 )
-
-type Function func(StateDB, ContractRef, []byte, uint64) ([]byte, uint64, error)
 
 var AploInterfaces = map[string]bool{
 	"70a08231": true,
@@ -19,7 +18,7 @@ var AploInterfaces = map[string]bool{
 	"313ce567": true,
 	"01ffc9a7": true,
 }
-var AploFunctions = map[string]Function{
+var AploFunctions = map[string]types.Function{
 	// totalSupply
 	//"0x18160ddd": func(state StateDB, address ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
 
@@ -27,10 +26,10 @@ var AploFunctions = map[string]Function{
 	//	return ret, 0, nil
 	//},
 	// balanceOf
-	"70a08231": func(state StateDB, address ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
+	"70a08231": func(state types.StateDB, address types.ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
 
 		if len(input) != 36 {
-			return nil, 0, ErrExecutionReverted
+			return nil, 0, errors.New("execution reverted")
 		}
 		of := input[4:36]
 		ofAddr := common.BytesToAddress(of[12:32])
@@ -38,9 +37,9 @@ var AploFunctions = map[string]Function{
 		return balance, 0, nil
 	},
 	// transfer
-	"a9059cbb": func(state StateDB, from ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
+	"a9059cbb": func(state types.StateDB, from types.ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
 		if len(input) != 68 || gas < 25000 {
-			return nil, gas / 2, ErrExecutionReverted
+			return nil, gas / 2, errors.New("execution reverted")
 		}
 		to := input[4:36]
 		toAddr := common.BytesToAddress(to[12:32])
@@ -50,7 +49,7 @@ var AploFunctions = map[string]Function{
 		balance := state.GetBalance(from.Address())
 
 		if balance.Cmp(amountInt) < 0 {
-			return nil, gas / 2, ErrExecutionReverted
+			return nil, gas / 2, errors.New("execution reverted")
 		}
 
 		state.SubBalance(from.Address(), amountInt)
@@ -68,17 +67,17 @@ var AploFunctions = map[string]Function{
 		return ret, 25000, nil
 	},
 	// name
-	"06fdde03": func(state StateDB, address ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
+	"06fdde03": func(state types.StateDB, address types.ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
 		ret := []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, 65, 112, 108, 111, 32, 110, 97, 116, 105, 118, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 		return ret, 0, nil
 	},
 	// symbol
-	"95d89b41": func(state StateDB, address ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
+	"95d89b41": func(state types.StateDB, address types.ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
 		ret := []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 65, 80, 76, 79, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 		return ret, 0, nil
 	},
 	// decimals
-	"313ce567": func(state StateDB, address ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
+	"313ce567": func(state types.StateDB, address types.ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
 		ret := [32]byte{
 			0,
 			0,
@@ -116,9 +115,9 @@ var AploFunctions = map[string]Function{
 		return ret[0:32], 0, nil
 	},
 	// supportsinterface
-	"01ffc9a7": func(state StateDB, address ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
+	"01ffc9a7": func(state types.StateDB, address types.ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
 		if len(input) < 8 {
-			return nil, 0, ErrExecutionReverted
+			return nil, 0, errors.New("execution reverted")
 		}
 		interfaceID := hex.EncodeToString(input[4:8])
 		var ret []byte

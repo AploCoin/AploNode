@@ -62,7 +62,7 @@ type StateTransition struct {
 	initialGas uint64
 	value      *big.Int
 	data       []byte
-	state      vm.StateDB
+	state      types.StateDB
 	evm        *vm.EVM
 }
 
@@ -192,21 +192,21 @@ func (st *StateTransition) to() common.Address {
 	}
 	return *st.msg.To()
 }
-func (st *StateTransition) addGaplo(address common.Address, amount *big.Int) error {
+func (st *StateTransition) addGaplo(address common.Address, amount *big.Int) ([]byte, error) {
 	transferInput := crypto.Keccak256([]byte("refund(address,uint256)"))[0:4]
 	paddedAmount := common.LeftPadBytes(amount.Bytes(), 32)
 	paddedAddress := common.LeftPadBytes(address.Bytes(), 32)
 	transferInput = append(transferInput, append(paddedAddress, paddedAmount...)...)
 
-	_, _, err := st.evm.Call(
+	rev, _, err := st.evm.Call(
 		//vm.AccountRef(st.msg.From()),
-		vm.AccountRef(common.HexToAddress("0x0000000000000000000000000000000000000000")),
+		types.AccountRef(common.HexToAddress("0x0000000000000000000000000000000000000000")),
 		params.GAploContractAddress,
 		transferInput,
 		1000000000000000000,
 		big.NewInt(0),
 	)
-	return err
+	return rev, err
 }
 func (st *StateTransition) subGaplo(address common.Address, amount *big.Int) error {
 	transferInput := crypto.Keccak256([]byte("takeFee(uint256)"))[0:4]
@@ -214,7 +214,7 @@ func (st *StateTransition) subGaplo(address common.Address, amount *big.Int) err
 	transferInput = append(transferInput, paddedAmount...)
 
 	_, _, err := st.evm.Call(
-		vm.AccountRef(st.msg.From()),
+		types.AccountRef(st.msg.From()),
 		params.GAploContractAddress,
 		transferInput,
 		1000000000000000000,
@@ -230,21 +230,18 @@ func (st *StateTransition) buyGas() error {
 	gaploInput = append(gaploInput, paddedAddress...)
 
 	balanceRet, _, err := st.evm.Call(
-		vm.AccountRef(st.msg.From()),
+		types.AccountRef(st.msg.From()),
 		params.GAploContractAddress,
 		gaploInput,
 		1000000000000000000,
 		big.NewInt(0),
 	)
 	if err != nil {
-		fmt.Println("line 233")
 		return err
 	}
 
 	balance := new(big.Int).SetBytes(balanceRet)
-	log.Info("BuyGas", "gaplo balance", balance)
 
-	log.Info("buyGas", "msg", st.msg)
 	mgval := new(big.Int).SetUint64(st.msg.Gas())
 	mgval = mgval.Mul(mgval, st.gasPrice)
 	balanceCheck := mgval
@@ -343,6 +340,7 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	// 6. caller has enough balance to cover asset transfer for **topmost** call
 
 	// Check clauses 1-3, buy gas if everything is correct
+	log.Warn("Transaction value", "value", st.value)
 	if err := st.preCheck(); err != nil {
 		return nil, err
 	}
@@ -356,7 +354,7 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 
 	var (
 		msg              = st.msg
-		sender           = vm.AccountRef(msg.From())
+		sender           = types.AccountRef(msg.From())
 		rules            = st.evm.ChainConfig().Rules(st.evm.Context.BlockNumber, st.evm.Context.Random != nil)
 		contractCreation = msg.To() == nil
 	)
@@ -387,6 +385,7 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	if contractCreation {
 		ret, _, st.gas, vmerr = st.evm.Create(sender, st.data, st.gas, st.value)
 	} else {
+		log.Warn("Transaction value", "value", st.value)
 		// Increment the nonce for the next transaction
 		st.state.SetNonce(msg.From(), st.state.GetNonce(sender.Address())+1)
 		ret, st.gas, vmerr = st.evm.Call(sender, st.to(), st.data, st.gas, st.value)
@@ -411,10 +410,9 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	} else {
 		fee := new(big.Int).SetUint64(st.gasUsed())
 		fee.Mul(fee, effectiveTip)
-		log.Debug("Tip", "amount", fee, "coinbase", st.evm.Context.Coinbase)
-		err := st.addGaplo(st.evm.Context.Coinbase, fee)
+		rev, err := st.addGaplo(st.evm.Context.Coinbase, fee)
 		if err != nil {
-			log.Error("Tip error", "amount", fee, "err", err)
+			log.Error("Tip error", "amount", fee, "err", rev, "err_name", err)
 		}
 		// add pow fork check & change state root after ethw fork.
 		// thx twitter @z_j_s ^_^ reported it
@@ -447,7 +445,6 @@ func (st *StateTransition) refundGas(refundQuotient uint64, vmerr error) {
 	if vmerr == nil {
 		if len(st.data) >= 4 {
 			selector := st.data[0:4]
-			log.Warn("Refund", "selector", selector, "to", st.to(), "to eq", st.to() == params.GAploContractAddress, "selector eq", reflect.DeepEqual(selector, params.GAploMineSelector[0:4]))
 			if st.to() == params.GAploContractAddress {
 				if reflect.DeepEqual(selector, params.GAploMineSelector[0:4]) {
 					gaploUsed := new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), st.gasPrice)
@@ -459,8 +456,9 @@ func (st *StateTransition) refundGas(refundQuotient uint64, vmerr error) {
 				}
 			}
 		}
+	} else {
+		log.Error("refund Gas error", "error", vmerr.Error())
 	}
-	log.Warn("Refund", "amount", remaining)
 	st.addGaplo(st.msg.From(), remaining)
 
 	// Also return remaining gas to the block gas counter so it is
