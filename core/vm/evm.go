@@ -123,11 +123,14 @@ type EVM struct {
 	// available gas is calculated in gasCall* according to the 63/64 rule and later
 	// applied in opCall*.
 	callGasTemp uint64
+
+	// Add blockchain reference
+	blockchain types.Blockchain
 }
 
 // NewEVM returns a new EVM. The returned EVM is not thread safe and should
 // only ever be used *once*.
-func NewEVM(blockCtx BlockContext, txCtx TxContext, statedb types.StateDB, chainConfig *params.ChainConfig, config Config) *EVM {
+func NewEVM(blockCtx BlockContext, txCtx TxContext, statedb types.StateDB, chainConfig *params.ChainConfig, config Config, blockchain types.Blockchain) *EVM {
 	evm := &EVM{
 		Context:     blockCtx,
 		TxContext:   txCtx,
@@ -135,6 +138,7 @@ func NewEVM(blockCtx BlockContext, txCtx TxContext, statedb types.StateDB, chain
 		Config:      config,
 		chainConfig: chainConfig,
 		chainRules:  chainConfig.Rules(blockCtx.BlockNumber, blockCtx.Random != nil),
+		blockchain:  blockchain,
 	}
 	evm.interpreter = NewEVMInterpreter(evm, config)
 	return evm
@@ -229,7 +233,7 @@ func (evm *EVM) Call(caller types.ContractRef, addr common.Address, input []byte
 				if caller != nil && err == nil {
 					//log.Warn("APLO", "selector", selector)
 					var gasUsed uint64
-					ret, gasUsed, err = functionToExecute(evm.StateDB, caller, input, gas)
+					ret, gasUsed, err = functionToExecute(evm.blockchain, evm.StateDB, caller, input, gas)
 					gas -= gasUsed
 				} else {
 					err = ErrExecutionReverted

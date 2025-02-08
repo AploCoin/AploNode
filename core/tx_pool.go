@@ -1869,6 +1869,7 @@ func GetGaploBalance(pool *TxPool, state *state.StateDB, address *common.Address
 		},
 		state,
 		pool.chainconfig, vm.Config{NoBaseFee: true},
+		nil,
 	)
 
 	gaploInput := crypto.Keccak256([]byte("balanceOf(address)"))[0:4]

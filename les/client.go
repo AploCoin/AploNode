@@ -109,7 +109,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
 			config.NetworkId = chainConfig.ChainID_ALT.Uint64()
 		}
 	}
-	
+
 	peers := newServerPeerSet()
 	merger := consensus.NewMerger(chainDb)
 	leth := &LightEthereum{

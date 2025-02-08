@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/ethereum/go-ethereum/builtin/aplo"
+	"github.com/ethereum/go-ethereum/builtin/blockoracle"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 )
@@ -12,7 +13,9 @@ import (
 var BuiltInContracts map[common.Address]*map[string]types.Function
 
 func init() {
-	BuiltInContracts[common.HexToAddress("0x0000000000000000000000000000000000001235")] = &aplo.AploFunctions
+	BuiltInContracts = make(map[common.Address]*map[string]types.Function)
+	BuiltInContracts[common.HexToAddress("0x0000000000000000000000000000000000001235")] = &aplo.Functions
+	BuiltInContracts[common.HexToAddress("0x0000000000000000000000000000000000001236")] = &blockoracle.Functions
 }
 
 func GetFunction(contractAddress *common.Address, input []byte) (types.Function, error) {

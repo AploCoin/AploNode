@@ -480,6 +480,11 @@ func DefaultGenesisBlock() *Genesis {
 				Storage: map[common.Hash]common.Hash{},
 				Balance: big.NewInt(0),
 			},
+			params.BlockOracleContractAddress: {
+				Code:    aploCode,
+				Storage: map[common.Hash]common.Hash{},
+				Balance: big.NewInt(0),
+			},
 			//common.HexToAddress("0x67adcF8c25c88aF0Df3caB522C9dD5b11d017aca"): {
 			//	Balance: balance,
 			//},

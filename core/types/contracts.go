@@ -6,7 +6,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-type Function func(StateDB, ContractRef, []byte, uint64) ([]byte, uint64, error)
+type Function func(Blockchain, StateDB, ContractRef, []byte, uint64) ([]byte, uint64, error)
 
 // StateDB is an EVM database for full state querying.
 type StateDB interface {
@@ -77,3 +77,8 @@ type AccountRef common.Address
 
 // Address casts AccountRef to a Address
 func (ar AccountRef) Address() common.Address { return (common.Address)(ar) }
+
+// Blockchain represents the minimum blockchain interface the EVM requires to function
+type Blockchain interface {
+	GetBlockByNumber(number uint64) *Block
+}

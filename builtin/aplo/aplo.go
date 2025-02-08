@@ -18,15 +18,9 @@ var AploInterfaces = map[string]bool{
 	"313ce567": true,
 	"01ffc9a7": true,
 }
-var AploFunctions = map[string]types.Function{
-	// totalSupply
-	//"0x18160ddd": func(state StateDB, address ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
-
-	//	ret := []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, 65, 112, 108, 111, 32, 110, 97, 116, 105, 118, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-	//	return ret, 0, nil
-	//},
+var Functions = map[string]types.Function{
 	// balanceOf
-	"70a08231": func(state types.StateDB, address types.ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
+	"70a08231": func(_ types.Blockchain, state types.StateDB, address types.ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
 
 		if len(input) != 36 {
 			return nil, 0, errors.New("execution reverted")
@@ -37,7 +31,7 @@ var AploFunctions = map[string]types.Function{
 		return balance, 0, nil
 	},
 	// transfer
-	"a9059cbb": func(state types.StateDB, from types.ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
+	"a9059cbb": func(_ types.Blockchain, state types.StateDB, from types.ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
 		if len(input) != 68 || gas < 25000 {
 			return nil, gas / 2, errors.New("execution reverted")
 		}
@@ -67,17 +61,17 @@ var AploFunctions = map[string]types.Function{
 		return ret, 25000, nil
 	},
 	// name
-	"06fdde03": func(state types.StateDB, address types.ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
+	"06fdde03": func(_ types.Blockchain, state types.StateDB, address types.ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
 		ret := []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, 65, 112, 108, 111, 32, 110, 97, 116, 105, 118, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 		return ret, 0, nil
 	},
 	// symbol
-	"95d89b41": func(state types.StateDB, address types.ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
+	"95d89b41": func(_ types.Blockchain, state types.StateDB, address types.ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
 		ret := []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 65, 80, 76, 79, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 		return ret, 0, nil
 	},
 	// decimals
-	"313ce567": func(state types.StateDB, address types.ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
+	"313ce567": func(_ types.Blockchain, state types.StateDB, address types.ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
 		ret := [32]byte{
 			0,
 			0,
@@ -115,7 +109,7 @@ var AploFunctions = map[string]types.Function{
 		return ret[0:32], 0, nil
 	},
 	// supportsinterface
-	"01ffc9a7": func(state types.StateDB, address types.ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
+	"01ffc9a7": func(_ types.Blockchain, state types.StateDB, address types.ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
 		if len(input) < 8 {
 			return nil, 0, errors.New("execution reverted")
 		}
