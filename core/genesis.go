@@ -449,8 +449,9 @@ func DefaultGenesisBlock() *Genesis {
 
 	initialSupply := new(big.Int)
 	initialSupply.SetString("1000000000000000000000000000000000000000000000000000000000000000000000000000", 10)
-	balanceSlot := common.HexToHash("0x37d183ac349a4a6d608e7adcb375417a92489ee41c2dacdb148628a3781b7e93")
-	totalMinedSlot := common.HexToHash("0x068a51ce8ef957069a91550a82dd07d1006ff1e6320fd1436effba6fd671df39")
+	balanceSlot := common.HexToHash("0x0b063ea9a1c5a5f474216f628fdf6a692512b36dff1289ce954d014cd1884625")
+	ShortNameSlot := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000003")
+	NameSlot := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000004")
 	totalMined := new(big.Int)
 	totalMined.SetString("11", 10)
 	//balance, _ := new(big.Int).SetString("1000000000000000000000000000000000000", 10)
@@ -470,8 +471,10 @@ func DefaultGenesisBlock() *Genesis {
 					common.HexToHash("0x2"): common.BigToHash(initialSupply),
 					// Initial balance for genesis address storage slot
 					// Calculate storage slot for _balances[initialHolder]
-					balanceSlot:    common.BigToHash(initialSupply),
-					totalMinedSlot: common.BigToHash(totalMined),
+					balanceSlot: common.BigToHash(initialSupply),
+					//totalMinedSlot: common.BigToHash(totalMined),
+					ShortNameSlot: common.HexToHash("4741504c4f00000000000000000000000000000000000000000000000000000a"),
+					NameSlot:      common.HexToHash("4761732041706c6f000000000000000000000000000000000000000000000010"),
 				},
 				Balance: big.NewInt(0),
 			},
