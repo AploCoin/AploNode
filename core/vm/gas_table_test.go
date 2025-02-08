@@ -25,6 +25,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -88,12 +89,12 @@ func TestEIP2200(t *testing.T) {
 		statedb.Finalise(true) // Push the state into the "original" slot
 
 		vmctx := BlockContext{
-			CanTransfer: func(StateDB, common.Address, *big.Int) bool { return true },
-			Transfer:    func(StateDB, common.Address, common.Address, *big.Int) {},
+			CanTransfer: func(types.StateDB, common.Address, *big.Int) bool { return true },
+			Transfer:    func(types.StateDB, common.Address, common.Address, *big.Int) {},
 		}
-		vmenv := NewEVM(vmctx, TxContext{}, statedb, params.AllEthashProtocolChanges, Config{ExtraEips: []int{2200}})
+		vmenv := NewEVM(vmctx, TxContext{}, statedb, params.AllEthashProtocolChanges, Config{ExtraEips: []int{2200}}, nil)
 
-		_, gas, err := vmenv.Call(AccountRef(common.Address{}), address, nil, tt.gaspool, new(big.Int))
+		_, gas, err := vmenv.Call(types.AccountRef(common.Address{}), address, nil, tt.gaspool, new(big.Int))
 		if err != tt.failure {
 			t.Errorf("test %d: failure mismatch: have %v, want %v", i, err, tt.failure)
 		}

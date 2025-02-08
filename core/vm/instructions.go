@@ -21,7 +21,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
 	"golang.org/x/crypto/sha3"
@@ -871,7 +870,6 @@ func makeLog(size int) executionFunc {
 			// core/state doesn't know the current block number.
 			BlockNumber: interpreter.evm.Context.BlockNumber.Uint64(),
 		}
-		log.Warn("Log", "log", exlog)
 
 		interpreter.evm.StateDB.AddLog(exlog)
 

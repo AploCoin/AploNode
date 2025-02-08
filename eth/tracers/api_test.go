@@ -96,7 +96,9 @@ func newTestBackend(t *testing.T, n int, gspec *core.Genesis, generator func(i i
 func (b *testBackend) HeaderByHash(ctx context.Context, hash common.Hash) (*types.Header, error) {
 	return b.chain.GetHeaderByHash(hash), nil
 }
-
+func (b *testBackend) GetBlockchain() *core.BlockChain {
+	return b.chain
+}
 func (b *testBackend) HeaderByNumber(ctx context.Context, number rpc.BlockNumber) (*types.Header, error) {
 	if number == rpc.PendingBlockNumber || number == rpc.LatestBlockNumber {
 		return b.chain.CurrentHeader(), nil
@@ -168,7 +170,7 @@ func (b *testBackend) StateAtTransaction(ctx context.Context, block *types.Block
 		if idx == txIndex {
 			return msg, context, statedb, nil
 		}
-		vmenv := vm.NewEVM(context, txContext, statedb, b.chainConfig, vm.Config{})
+		vmenv := vm.NewEVM(context, txContext, statedb, b.chainConfig, vm.Config{}, b.chain)
 		if _, err := core.ApplyMessage(vmenv, msg, new(core.GasPool).AddGas(tx.Gas())); err != nil {
 			return nil, vm.BlockContext{}, nil, fmt.Errorf("transaction %#x failed: %v", tx.Hash(), err)
 		}

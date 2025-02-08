@@ -25,6 +25,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -38,7 +39,7 @@ var loopInterruptTests = []string{
 func TestLoopInterrupt(t *testing.T) {
 	address := common.BytesToAddress([]byte("contract"))
 	vmctx := BlockContext{
-		Transfer: func(StateDB, common.Address, common.Address, *big.Int) {},
+		Transfer: func(types.StateDB, common.Address, common.Address, *big.Int) {},
 	}
 
 	for i, tt := range loopInterruptTests {
@@ -47,13 +48,13 @@ func TestLoopInterrupt(t *testing.T) {
 		statedb.SetCode(address, common.Hex2Bytes(tt))
 		statedb.Finalise(true)
 
-		evm := NewEVM(vmctx, TxContext{}, statedb, params.AllEthashProtocolChanges, Config{})
+		evm := NewEVM(vmctx, TxContext{}, statedb, params.AllEthashProtocolChanges, Config{}, nil)
 
 		errChannel := make(chan error)
 		timeout := make(chan bool)
 
 		go func(evm *EVM) {
-			_, _, err := evm.Call(AccountRef(common.Address{}), address, nil, math.MaxUint64, new(big.Int))
+			_, _, err := evm.Call(types.AccountRef(common.Address{}), address, nil, math.MaxUint64, new(big.Int))
 			errChannel <- err
 		}(evm)
 

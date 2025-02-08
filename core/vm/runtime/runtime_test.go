@@ -345,7 +345,7 @@ func benchmarkNonModifyingCode(gas uint64, code []byte, name string, tracerCode 
 	var (
 		destination = common.BytesToAddress([]byte("contract"))
 		vmenv       = NewEnv(cfg)
-		sender      = vm.AccountRef(cfg.Origin)
+		sender      = types.AccountRef(cfg.Origin)
 	)
 	cfg.State.CreateAccount(destination)
 	eoa := common.HexToAddress("E0")

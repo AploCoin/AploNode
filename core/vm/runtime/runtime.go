@@ -24,6 +24,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
@@ -116,7 +117,7 @@ func Execute(code, input []byte, cfg *Config) ([]byte, *state.StateDB, error) {
 	var (
 		address = common.BytesToAddress([]byte("contract"))
 		vmenv   = NewEnv(cfg)
-		sender  = vm.AccountRef(cfg.Origin)
+		sender  = types.AccountRef(cfg.Origin)
 	)
 	if rules := cfg.ChainConfig.Rules(vmenv.Context.BlockNumber, vmenv.Context.Random != nil); rules.IsBerlin {
 		cfg.State.PrepareAccessList(cfg.Origin, &address, vm.ActivePrecompiles(rules), nil)
@@ -148,7 +149,7 @@ func Create(input []byte, cfg *Config) ([]byte, common.Address, uint64, error) {
 	}
 	var (
 		vmenv  = NewEnv(cfg)
-		sender = vm.AccountRef(cfg.Origin)
+		sender = types.AccountRef(cfg.Origin)
 	)
 	if rules := cfg.ChainConfig.Rules(vmenv.Context.BlockNumber, vmenv.Context.Random != nil); rules.IsBerlin {
 		cfg.State.PrepareAccessList(cfg.Origin, nil, vm.ActivePrecompiles(rules), nil)

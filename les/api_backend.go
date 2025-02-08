@@ -47,6 +47,9 @@ type LesApiBackend struct {
 	gpo                 *gasprice.Oracle
 }
 
+func (b *LesApiBackend) GetBlockchain() *core.BlockChain {
+	return nil
+}
 func (b *LesApiBackend) ChainConfig() *params.ChainConfig {
 	return b.eth.chainConfig
 }
@@ -185,7 +188,7 @@ func (b *LesApiBackend) GetEVM(ctx context.Context, msg core.Message, state *sta
 	}
 	txContext := core.NewEVMTxContext(msg)
 	context := core.NewEVMBlockContext(header, b.eth.blockchain, nil)
-	return vm.NewEVM(context, txContext, state, b.eth.chainConfig, *vmConfig), state.Error, nil
+	return vm.NewEVM(context, txContext, state, b.eth.chainConfig, *vmConfig, nil), state.Error, nil
 }
 
 func (b *LesApiBackend) SendTx(ctx context.Context, signedTx *types.Transaction) error {

@@ -48,6 +48,10 @@ type EthAPIBackend struct {
 	gpo                 *gasprice.Oracle
 }
 
+func (b *EthAPIBackend) GetBlockchain() *core.BlockChain {
+	return b.eth.blockchain
+}
+
 // ChainConfig returns the active chain configuration.
 func (b *EthAPIBackend) ChainConfig() *params.ChainConfig {
 	return b.eth.blockchain.Config()
@@ -219,7 +223,7 @@ func (b *EthAPIBackend) GetEVM(ctx context.Context, msg core.Message, state *sta
 	}
 	txContext := core.NewEVMTxContext(msg)
 	context := core.NewEVMBlockContext(header, b.eth.BlockChain(), nil)
-	return vm.NewEVM(context, txContext, state, b.eth.blockchain.Config(), *vmConfig), vmError, nil
+	return vm.NewEVM(context, txContext, state, b.eth.blockchain.Config(), *vmConfig, b.eth.blockchain), vmError, nil
 }
 
 func (b *EthAPIBackend) SubscribeRemovedLogsEvent(ch chan<- core.RemovedLogsEvent) event.Subscription {

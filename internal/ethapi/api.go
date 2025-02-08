@@ -2112,7 +2112,7 @@ func GetGaploBalance(ctx context.Context, b Backend, args TransactionArgs, block
 	gaploInput = append(gaploInput, paddedAddress...)
 
 	balanceRet, _, err := evm.Call(
-		vm.AccountRef(*args.From),
+		types.AccountRef(*args.From),
 		params.GAploContractAddress,
 		gaploInput,
 		1000000000000000000,
