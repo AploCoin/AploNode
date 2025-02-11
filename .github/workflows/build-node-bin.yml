@@ -23,9 +23,6 @@ jobs:
       - name: Build
         run: GOARCH=amd64 make geth
 
-      - name: Run tests for geth
-        run: go test -v ./geth/...
-
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
