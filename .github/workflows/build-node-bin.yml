@@ -8,9 +8,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        arch: [amd64, arm64]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -22,14 +19,17 @@ jobs:
 
       #- name: Install dependencies
       #  run: go mod tidy
-
+      
       - name: Build
-        run: GOARCH=${{ matrix.arch }} make geth
+        run: GOARCH=amd64 make geth
+
+      - name: Run tests for geth
+        run: go test -v ./geth/...
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: geth-binary-${{ matrix.arch }}
+          name: geth-binary-amd64
           path: ./build/bin/geth
 
       - name: Create Release
@@ -38,6 +38,7 @@ jobs:
         with:
           files: ./build/bin/geth
           tag_name: ${{ github.ref_name }}
-          release_name: "Release ${{ github.ref_name }}-(${{ matrix.arch }})"
+          release_name: "Release ${{ github.ref_name }} (amd64)"
           draft: false
           prerelease: false
+
