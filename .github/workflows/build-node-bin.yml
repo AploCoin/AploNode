@@ -24,7 +24,7 @@ jobs:
       #  run: go mod tidy
 
       - name: Build
-        run: GOARCH=${{ matrix.arch }} make geth.
+        run: GOARCH=${{ matrix.arch }} make geth
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
