@@ -9,7 +9,7 @@ GO ?= latest
 GORUN = env GO111MODULE=on go run
 
 geth:
-	$(GORUN) build/ci.go install ./cmd/geth
+	go install -ldflags=-checklinkname=0 ./cmd/geth
 	@echo "Done building."
 	@echo "Run \"$(GOBIN)/geth\" to launch geth."
 

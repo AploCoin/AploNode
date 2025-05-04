@@ -133,7 +133,7 @@ func KnownDNSNetwork(genesis common.Hash, protocol string) string {
 
 var GAploContractAddress = common.HexToAddress("0x0000000000000000000000000000000000001234")
 var GAploMineSelector = [4]byte{47, 220, 80, 94}
-var GAploRewardCoef = big.NewInt(66)
+var GAploBaseReward = big.NewInt(50000)
 var AploContractAddress = common.HexToAddress("0x0000000000000000000000000000000000001235")
 var BlockOracleContractAddress = common.HexToAddress("0x0000000000000000000000000000000000001236")
 
