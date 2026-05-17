@@ -146,8 +146,8 @@ const (
 type blockChain interface {
 	CurrentBlock() *types.Block
 	GetBlock(hash common.Hash, number uint64) *types.Block
+	GetBlockByNumber(number uint64) *types.Block
 	StateAt(root common.Hash) (*state.StateDB, error)
-
 	SubscribeChainHeadEvent(ch chan<- ChainHeadEvent) event.Subscription
 }
 
@@ -1869,7 +1869,7 @@ func GetGaploBalance(pool *TxPool, state *state.StateDB, address *common.Address
 		},
 		state,
 		pool.chainconfig, vm.Config{NoBaseFee: true},
-		nil,
+		pool.chain,
 	)
 
 	gaploInput := crypto.Keccak256([]byte("balanceOf(address)"))[0:4]

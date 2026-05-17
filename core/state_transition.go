@@ -22,6 +22,7 @@ import (
 	"math/big"
 	"reflect"
 
+	"github.com/ethereum/go-ethereum/builtin/aplo"
 	"github.com/ethereum/go-ethereum/common"
 	cmath "github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -447,12 +448,20 @@ func (st *StateTransition) refundGas(refundQuotient uint64, vmerr error) {
 			selector := st.data[0:4]
 			if st.to() == params.GAploContractAddress {
 				if reflect.DeepEqual(selector, params.GAploMineSelector[0:4]) {
-					gaploUsed := new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), st.gasPrice)
-					gaploReward := new(big.Int).Div(gaploUsed, params.GAploRewardCoef)
-					if st.evm.Context.Coinbase != st.msg.From() {
-						gaploReward = new(big.Int).Add(gaploUsed, gaploReward)
+					// Gate the mining reward on the caller having staked APLO.
+					// mult is 0 (not staked) or 10–17 representing 1.0×–1.7×.
+					mult := aplo.StakingMultiplier(st.state, st.msg.From())
+					if mult > 0 {
+						gaploUsed := new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), st.gasPrice)
+						gaploReward := new(big.Int).Div(gaploUsed, params.GAploRewardCoef)
+						// Scale by tier: multiply first then divide by 10 to preserve precision.
+						gaploReward.Mul(gaploReward, big.NewInt(mult))
+						gaploReward.Div(gaploReward, big.NewInt(10))
+						if st.evm.Context.Coinbase != st.msg.From() {
+							gaploReward.Add(gaploReward, gaploUsed)
+						}
+						remaining.Add(remaining, gaploReward)
 					}
-					remaining = new(big.Int).Add(remaining, gaploReward)
 				}
 			}
 		}

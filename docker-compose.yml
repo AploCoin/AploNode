@@ -1,0 +1,179 @@
+version: '3.8'
+
+# 4-node Aplo network
+#
+# Bootnode key is secp256k1 private key 0x01 (generator point), giving a
+# deterministic enode URL that never changes between restarts.
+#
+# Node layout:
+#   bootnode  — discovery only, no RPC
+#   node1     — miner + RPC  (HTTP :8545, WS :8546)
+#   node2     — miner + RPC  (HTTP :8547, WS :8548)
+#   node3     — RPC only     (HTTP :8549, WS :8550)
+#   node4     — RPC only     (HTTP :8551, WS :8552)
+#
+# Usage:
+#   docker compose build
+#   docker compose up -d
+#   docker compose logs -f node1
+
+x-bootnode-enode: &bootnode-enode
+  "enode://79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8@bootnode:30301"
+
+x-common-flags: &common-flags
+  --networkid 28282
+  --bootnodes "enode://79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8@bootnode:30301"
+  --syncmode full
+  --gcmode archive
+  --verbosity 3
+
+services:
+
+  # ── Bootnode ────────────────────────────────────────────────────────────────
+  bootnode:
+    build:
+      context: .
+      dockerfile: Dockerfile.alltools
+    image: aplonode-tools
+    entrypoint: bootnode
+    command: >
+      --nodekeyhex=0000000000000000000000000000000000000000000000000000000000000001
+      --addr=:30301
+      --verbosity=3
+    ports:
+      - "30301:30301/udp"
+    networks:
+      - aplonet
+    restart: unless-stopped
+
+  # ── Node 1 — miner ──────────────────────────────────────────────────────────
+  node1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: aplonode
+    depends_on:
+      - bootnode
+    volumes:
+      - node1_data:/root/.ethereum
+    ports:
+      - "8545:8545"       # HTTP RPC
+      - "8546:8546"       # WebSocket
+      - "30303:30303"     # P2P TCP
+      - "30303:30303/udp" # P2P UDP
+    command: >
+      --networkid 28282
+      --bootnodes "enode://79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8@bootnode:30301"
+      --syncmode full
+      --gcmode archive
+      --http --http.addr 0.0.0.0 --http.port 8545
+      --http.api eth,net,web3,personal,miner,debug,txpool
+      --http.corsdomain "*" --http.vhosts "*"
+      --ws --ws.addr 0.0.0.0 --ws.port 8546
+      --ws.api eth,net,web3,personal,miner,debug,txpool
+      --ws.origins "*"
+      --mine --miner.threads 1
+      --miner.etherbase "0xB6A5301a6c280c9400FF355C678bd38d2284DCfF"
+      --verbosity 3
+    networks:
+      - aplonet
+    restart: unless-stopped
+
+  # ── Node 2 — miner ──────────────────────────────────────────────────────────
+  node2:
+    image: aplonode
+    depends_on:
+      - bootnode
+      - node1
+    volumes:
+      - node2_data:/root/.ethereum
+    ports:
+      - "8547:8545"
+      - "8548:8546"
+      - "30304:30303"
+      - "30304:30303/udp"
+    command: >
+      --networkid 28282
+      --bootnodes "enode://79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8@bootnode:30301"
+      --syncmode full
+      --gcmode archive
+      --http --http.addr 0.0.0.0 --http.port 8545
+      --http.api eth,net,web3,personal,miner,debug,txpool
+      --http.corsdomain "*" --http.vhosts "*"
+      --ws --ws.addr 0.0.0.0 --ws.port 8546
+      --ws.api eth,net,web3,personal,miner,debug,txpool
+      --ws.origins "*"
+      --mine --miner.threads 1
+      --miner.etherbase "0x951eF2cF5A4972C8EbAf0759a61375Fd3572889f"
+      --verbosity 3
+    networks:
+      - aplonet
+    restart: unless-stopped
+
+  # ── Node 3 — RPC ────────────────────────────────────────────────────────────
+  node3:
+    image: aplonode
+    depends_on:
+      - bootnode
+      - node1
+    volumes:
+      - node3_data:/root/.ethereum
+    ports:
+      - "8549:8545"
+      - "8550:8546"
+      - "30305:30303"
+      - "30305:30303/udp"
+    command: >
+      --networkid 28282
+      --bootnodes "enode://79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8@bootnode:30301"
+      --syncmode full
+      --gcmode archive
+      --http --http.addr 0.0.0.0 --http.port 8545
+      --http.api eth,net,web3,personal,debug,txpool
+      --http.corsdomain "*" --http.vhosts "*"
+      --ws --ws.addr 0.0.0.0 --ws.port 8546
+      --ws.api eth,net,web3,personal,debug,txpool
+      --ws.origins "*"
+      --verbosity 3
+    networks:
+      - aplonet
+    restart: unless-stopped
+
+  # ── Node 4 — RPC ────────────────────────────────────────────────────────────
+  node4:
+    image: aplonode
+    depends_on:
+      - bootnode
+      - node1
+    volumes:
+      - node4_data:/root/.ethereum
+    ports:
+      - "8551:8545"
+      - "8552:8546"
+      - "30306:30303"
+      - "30306:30303/udp"
+    command: >
+      --networkid 28282
+      --bootnodes "enode://79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8@bootnode:30301"
+      --syncmode full
+      --gcmode archive
+      --http --http.addr 0.0.0.0 --http.port 8545
+      --http.api eth,net,web3,personal,debug,txpool
+      --http.corsdomain "*" --http.vhosts "*"
+      --ws --ws.addr 0.0.0.0 --ws.port 8546
+      --ws.api eth,net,web3,personal,debug,txpool
+      --ws.origins "*"
+      --verbosity 3
+    networks:
+      - aplonet
+    restart: unless-stopped
+
+volumes:
+  node1_data:
+  node2_data:
+  node3_data:
+  node4_data:
+
+networks:
+  aplonet:
+    driver: bridge

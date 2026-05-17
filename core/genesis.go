@@ -150,16 +150,8 @@ func CommitGenesisState(db ethdb.Database, hash common.Hash) error {
 		// - private network, can't recover
 		var genesis *Genesis
 		switch hash {
-		case params.MainnetGenesisHash:
+		case params.AploGenesisHash:
 			genesis = DefaultGenesisBlock()
-		case params.RopstenGenesisHash:
-			genesis = DefaultRopstenGenesisBlock()
-		case params.RinkebyGenesisHash:
-			genesis = DefaultRinkebyGenesisBlock()
-		case params.GoerliGenesisHash:
-			genesis = DefaultGoerliGenesisBlock()
-		case params.SepoliaGenesisHash:
-			genesis = DefaultSepoliaGenesisBlock()
 		}
 		if genesis != nil {
 			alloc = genesis.Alloc
@@ -323,7 +315,7 @@ func SetupGenesisBlockWithOverride(db ethdb.Database, genesis *Genesis, override
 	// chain config as that would be AllProtocolChanges (applying any new fork
 	// on top of an existing private network genesis block). In that case, only
 	// apply the overrides.
-	if genesis == nil && stored != params.MainnetGenesisHash {
+	if genesis == nil && stored != params.AploGenesisHash {
 		newcfg = storedcfg
 		applyOverrides(newcfg)
 	}
@@ -345,18 +337,8 @@ func (g *Genesis) configOrDefault(ghash common.Hash) *params.ChainConfig {
 	switch {
 	case g != nil:
 		return g.Config
-	case ghash == params.MainnetGenesisHash:
+	case ghash == params.AploGenesisHash:
 		return params.MainnetChainConfig
-	case ghash == params.RopstenGenesisHash:
-		return params.RopstenChainConfig
-	case ghash == params.SepoliaGenesisHash:
-		return params.SepoliaChainConfig
-	case ghash == params.RinkebyGenesisHash:
-		return params.RinkebyChainConfig
-	case ghash == params.GoerliGenesisHash:
-		return params.GoerliChainConfig
-	case ghash == params.KilnGenesisHash:
-		return DefaultKilnGenesisBlock().Config
 	default:
 		return params.AllEthashProtocolChanges
 	}
@@ -445,7 +427,10 @@ func (g *Genesis) MustCommit(db ethdb.Database) *types.Block {
 // DefaultGenesisBlock returns the Ethereum main net genesis block.
 func DefaultGenesisBlock() *Genesis {
 	gaploCode := common.FromHex(params.GAPLO)
-	aploCode := common.FromHex("00")
+	// builtinStubCode is a single STOP byte deployed at built-in contract addresses.
+	// It must be non-empty so that Call's len(code)==0 short-circuit is not hit;
+	// actual dispatch is handled by the builtin package, not the EVM interpreter.
+	builtinStubCode := common.FromHex("00")
 
 	initialSupply := new(big.Int)
 	initialSupply.SetString("1000000000000000000000000000000000000000000000000000000000000000000000000000", 10)
@@ -479,12 +464,12 @@ func DefaultGenesisBlock() *Genesis {
 				Balance: big.NewInt(0),
 			},
 			params.AploContractAddress: {
-				Code:    aploCode,
+				Code:    builtinStubCode,
 				Storage: map[common.Hash]common.Hash{},
 				Balance: big.NewInt(0),
 			},
 			params.BlockOracleContractAddress: {
-				Code:    aploCode,
+				Code:    builtinStubCode,
 				Storage: map[common.Hash]common.Hash{},
 				Balance: big.NewInt(0),
 			},

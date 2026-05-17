@@ -167,6 +167,21 @@ func (evm *EVM) Interpreter() *EVMInterpreter {
 	return evm.interpreter
 }
 
+func (evm *EVM) runBuiltin(caller types.ContractRef, addr common.Address, input []byte, gas uint64) (ret []byte, leftOverGas uint64, err error) {
+	fn, err := builtin.GetFunction(&addr, input)
+	if err != nil {
+		return nil, gas, ErrExecutionReverted
+	}
+	var gasUsed uint64
+	ret, gasUsed, err = fn(evm.blockchain, evm.StateDB, caller, input, gas)
+	if gasUsed > gas {
+		gas = 0
+	} else {
+		gas -= gasUsed
+	}
+	return ret, gas, err
+}
+
 // Call executes the contract associated with the addr with the given input as
 // parameters. It also handles any necessary value transfer required and takes
 // the necessary steps to create accounts and reverses the state in case of an
@@ -220,33 +235,20 @@ func (evm *EVM) Call(caller types.ContractRef, addr common.Address, input []byte
 
 	if isPrecompile {
 		ret, gas, err = RunPrecompiledContract(p, input, gas)
+	} else if _, ok := builtin.BuiltInContracts[addr]; ok {
+		// Built-in contracts are dispatched before the len(code)==0 short-circuit
+		// so they work regardless of what stub bytecode is deployed at the address.
+		ret, gas, err = evm.runBuiltin(caller, addr, input, gas)
 	} else {
-		// Initialise a new contract and set the code that is to be used by the EVM.
-		// The contract is a scoped environment for this execution context only.
 		code := evm.StateDB.GetCode(addr)
 		if len(code) == 0 {
 			ret, err = nil, nil // gas is unchanged
 		} else {
-			_, ok := builtin.BuiltInContracts[addr]
-			if ok {
-				functionToExecute, err := builtin.GetFunction(&addr, input)
-				if caller != nil && err == nil {
-					//log.Warn("APLO", "selector", selector)
-					var gasUsed uint64
-					ret, gasUsed, err = functionToExecute(evm.blockchain, evm.StateDB, caller, input, gas)
-					gas -= gasUsed
-				} else {
-					err = ErrExecutionReverted
-				}
-			} else {
-				addrCopy := addr
-				// If the account has no code, we can abort here
-				// The depth-check is already done, and precompiles handled above
-				contract := NewContract(caller, types.AccountRef(addrCopy), value, gas)
-				contract.SetCallCode(&addrCopy, evm.StateDB.GetCodeHash(addrCopy), code)
-				ret, err = evm.interpreter.Run(contract, input, false)
-				gas = contract.Gas
-			}
+			addrCopy := addr
+			contract := NewContract(caller, types.AccountRef(addrCopy), value, gas)
+			contract.SetCallCode(&addrCopy, evm.StateDB.GetCodeHash(addrCopy), code)
+			ret, err = evm.interpreter.Run(contract, input, false)
+			gas = contract.Gas
 		}
 	}
 	// When an error was returned by the EVM or when setting the creation code
@@ -293,30 +295,16 @@ func (evm *EVM) CallCode(caller types.ContractRef, addr common.Address, input []
 		}(gas)
 	}
 
-	// It is allowed to call precompiles, even via delegatecall
 	if p, isPrecompile := evm.precompile(addr); isPrecompile {
 		ret, gas, err = RunPrecompiledContract(p, input, gas)
+	} else if _, ok := builtin.BuiltInContracts[addr]; ok {
+		ret, gas, err = evm.runBuiltin(caller, addr, input, gas)
 	} else {
-		_, ok := builtin.BuiltInContracts[addr]
-		if ok {
-			functionToExecute, err := builtin.GetFunction(&addr, input)
-			if caller != nil && err == nil {
-				//log.Warn("APLO", "selector", selector)
-				var gasUsed uint64
-				ret, gasUsed, err = functionToExecute(evm.blockchain, evm.StateDB, caller, input, gas)
-				gas -= gasUsed
-			} else {
-				err = ErrExecutionReverted
-			}
-		} else {
-			addrCopy := addr
-			// Initialise a new contract and set the code that is to be used by the EVM.
-			// The contract is a scoped environment for this execution context only.
-			contract := NewContract(caller, types.AccountRef(caller.Address()), value, gas)
-			contract.SetCallCode(&addrCopy, evm.StateDB.GetCodeHash(addrCopy), evm.StateDB.GetCode(addrCopy))
-			ret, err = evm.interpreter.Run(contract, input, false)
-			gas = contract.Gas
-		}
+		addrCopy := addr
+		contract := NewContract(caller, types.AccountRef(caller.Address()), value, gas)
+		contract.SetCallCode(&addrCopy, evm.StateDB.GetCodeHash(addrCopy), evm.StateDB.GetCode(addrCopy))
+		ret, err = evm.interpreter.Run(contract, input, false)
+		gas = contract.Gas
 	}
 	if err != nil {
 		evm.StateDB.RevertToSnapshot(snapshot)
@@ -347,12 +335,14 @@ func (evm *EVM) DelegateCall(caller types.ContractRef, addr common.Address, inpu
 		}(gas)
 	}
 
-	// It is allowed to call precompiles, even via delegatecall
 	if p, isPrecompile := evm.precompile(addr); isPrecompile {
 		ret, gas, err = RunPrecompiledContract(p, input, gas)
+	} else if _, ok := builtin.BuiltInContracts[addr]; ok {
+		// Built-in contracts are dispatched with the caller as the ContractRef,
+		// matching delegatecall semantics (msg.sender and storage context are caller's).
+		ret, gas, err = evm.runBuiltin(caller, addr, input, gas)
 	} else {
 		addrCopy := addr
-		// Initialise a new contract and make initialise the delegate values
 		contract := NewContract(caller, types.AccountRef(caller.Address()), nil, gas).AsDelegate()
 		contract.SetCallCode(&addrCopy, evm.StateDB.GetCodeHash(addrCopy), evm.StateDB.GetCode(addrCopy))
 		ret, err = evm.interpreter.Run(contract, input, false)
@@ -399,33 +389,18 @@ func (evm *EVM) StaticCall(caller types.ContractRef, addr common.Address, input 
 
 	if p, isPrecompile := evm.precompile(addr); isPrecompile {
 		ret, gas, err = RunPrecompiledContract(p, input, gas)
-	} else {
-		_, ok := builtin.BuiltInContracts[addr]
-		if ok {
-			functionToExecute, err := builtin.GetFunction(&addr, input)
-			if caller != nil && err == nil {
-				//log.Warn("APLO", "selector", selector)
-				var gasUsed uint64
-				ret, gasUsed, err = functionToExecute(evm.blockchain, evm.StateDB, caller, input, gas)
-				gas -= gasUsed
-			} else {
-				err = ErrExecutionReverted
-			}
-		} else {
-			// At this point, we use a copy of address. If we don't, the go compiler will
-			// leak the 'contract' to the outer scope, and make allocation for 'contract'
-			// even if the actual execution ends on RunPrecompiled above.
-			addrCopy := addr
-			// Initialise a new contract and set the code that is to be used by the EVM.
-			// The contract is a scoped environment for this execution context only.
-			contract := NewContract(caller, types.AccountRef(addrCopy), new(big.Int), gas)
-			contract.SetCallCode(&addrCopy, evm.StateDB.GetCodeHash(addrCopy), evm.StateDB.GetCode(addrCopy))
-			// When an error was returned by the EVM or when setting the creation code
-			// above we revert to the snapshot and consume any gas remaining. Additionally
-			// when we're in Homestead this also counts for code storage gas errors.
-			ret, err = evm.interpreter.Run(contract, input, true)
-			gas = contract.Gas
+	} else if _, ok := builtin.BuiltInContracts[addr]; ok {
+		// Reject state-mutating selectors (e.g. transfer) in static context.
+		if !builtin.IsReadOnly(&addr, input) {
+			return nil, gas, ErrWriteProtection
 		}
+		ret, gas, err = evm.runBuiltin(caller, addr, input, gas)
+	} else {
+		addrCopy := addr
+		contract := NewContract(caller, types.AccountRef(addrCopy), new(big.Int), gas)
+		contract.SetCallCode(&addrCopy, evm.StateDB.GetCodeHash(addrCopy), evm.StateDB.GetCode(addrCopy))
+		ret, err = evm.interpreter.Run(contract, input, true)
+		gas = contract.Gas
 	}
 	if err != nil {
 		evm.StateDB.RevertToSnapshot(snapshot)
