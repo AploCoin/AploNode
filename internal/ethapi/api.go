@@ -29,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/keystore"
 	"github.com/ethereum/go-ethereum/accounts/scwallet"
+	"github.com/ethereum/go-ethereum/builtin"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/common/math"
@@ -829,6 +830,9 @@ func (s *BlockChainAPI) GetCode(ctx context.Context, address common.Address, blo
 	state, _, err := s.b.StateAndHeaderByNumberOrHash(ctx, blockNrOrHash)
 	if state == nil || err != nil {
 		return nil, err
+	}
+	if _, ok := builtin.BuiltInContracts[address]; ok {
+		return hexutil.Bytes{0x60, 0x00, 0x60, 0x00, 0xf3}, nil
 	}
 	code := state.GetCode(address)
 	return code, state.Error()

@@ -20,9 +20,7 @@ var stakeUnit = new(big.Int).Mul(
 	new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil),
 )
 
-// maxTier is the highest tier index (0-based).
-// Tiers 0-7 yield multipliers 1.0×–1.7×, a maximum of 1.7×.
-const maxTier = int64(7)
+const maxTier = int64(6)
 
 var AploInterfaces = map[string]bool{
 	"70a08231": true,
@@ -80,7 +78,7 @@ func tierMultiplier(stakedAmount *big.Int) int64 {
 	if tier > maxTier {
 		tier = maxTier
 	}
-	return 10 + tier // 10, 11, 12, ..., 17
+	return 11 + tier // 10, 11, 12, ..., 17
 }
 
 // StakingMultiplier is exported so state_transition.go can read the tier

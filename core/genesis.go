@@ -430,16 +430,24 @@ func DefaultGenesisBlock() *Genesis {
 	// builtinStubCode is a single STOP byte deployed at built-in contract addresses.
 	// It must be non-empty so that Call's len(code)==0 short-circuit is not hit;
 	// actual dispatch is handled by the builtin package, not the EVM interpreter.
-	builtinStubCode := common.FromHex("00")
-
+	builtinStubCode := common.FromHex("6080604052")
 	initialSupply := new(big.Int)
 	initialSupply.SetString("1000000000000000000000000000000000000000000000000000000000000000000000000000", 10)
-	balanceSlot := common.HexToHash("0x0b063ea9a1c5a5f474216f628fdf6a692512b36dff1289ce954d014cd1884625")
+
+	bootstrapAddr := common.HexToAddress("0xb6a5301a6c280c9400ff355c678bd38d2284dcff")
+	// Storage slot for _balances[bootstrapAddr]: keccak256(abi.encode(bootstrapAddr, uint256(0)))
+	// _balances is at Solidity slot 0 in the GAPLO contract (OpenZeppelin ERC20 layout).
+	bootstrapSlotInput := make([]byte, 64)
+	copy(bootstrapSlotInput[12:32], bootstrapAddr.Bytes()) // address left-padded to 32 bytes
+	// bytes [32:64] remain zero → mapping slot index 0
+	bootstrapBalanceSlot := crypto.Keccak256Hash(bootstrapSlotInput)
+
+	//balanceSlot := common.HexToHash("0x0b063ea9a1c5a5f474216f628fdf6a692512b36dff1289ce954d014cd1884625")
 	ShortNameSlot := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000003")
 	NameSlot := common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000004")
 	totalMined := new(big.Int)
 	totalMined.SetString("11", 10)
-	//balance, _ := new(big.Int).SetString("1000000000000000000000000000000000000", 10)
+
 	return &Genesis{
 		Config:     params.MainnetChainConfig,
 		Timestamp:  1731516733,
@@ -456,7 +464,7 @@ func DefaultGenesisBlock() *Genesis {
 					common.HexToHash("0x2"): common.BigToHash(initialSupply),
 					// Initial balance for genesis address storage slot
 					// Calculate storage slot for _balances[initialHolder]
-					balanceSlot: common.BigToHash(initialSupply),
+					bootstrapBalanceSlot: common.BigToHash(initialSupply),
 					//totalMinedSlot: common.BigToHash(totalMined),
 					ShortNameSlot: common.HexToHash("4741504c4f00000000000000000000000000000000000000000000000000000a"),
 					NameSlot:      common.HexToHash("4761732041706c6f000000000000000000000000000000000000000000000010"),
