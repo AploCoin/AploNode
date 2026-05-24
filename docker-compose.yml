@@ -170,9 +170,6 @@ services:
 
 volumes:
   node1_data:
-  node2_data:
-  node3_data:
-  node4_data:
 
 networks:
   aplonet:
