@@ -449,10 +449,17 @@ func (st *StateTransition) refundGas(refundQuotient uint64, vmerr error) {
 			if st.to() == params.GAploContractAddress {
 				if reflect.DeepEqual(selector, params.GAploMineSelector[0:4]) {
 					// Gate the mining reward on the caller having staked APLO.
-					// mult is 0 (not staked) or 10–17 representing 1.0×–1.7×.
 					mult := aplo.StakingMultiplier(st.state, st.msg.From())
 					if mult > 0 {
-						gaploUsed := new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), st.gasPrice)
+						effectivePrice := st.gasPrice
+						if st.evm.Context.BaseFee != nil && effectivePrice.Cmp(st.evm.Context.BaseFee) > 0 {
+							effectivePrice = st.evm.Context.BaseFee
+						} else if st.evm.Context.BaseFee == nil {
+							fmt.Println("[NIL] BaseFee is nil!")
+						}
+
+						gaploUsed := new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), effectivePrice)
+						//gaploUsed := new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), st.gasPrice)
 						gaploReward := new(big.Int).Div(gaploUsed, params.GAploRewardCoef)
 						// Scale by tier: multiply first then divide by 10 to preserve precision.
 						gaploReward.Mul(gaploReward, big.NewInt(mult))
