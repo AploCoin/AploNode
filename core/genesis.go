@@ -434,7 +434,7 @@ func DefaultGenesisBlock() *Genesis {
 	initialSupply := new(big.Int)
 	initialSupply.SetString("1000000000000000000000000000000000000000000000000000000000000000000000000000", 10)
 
-	bootstrapAddr := common.HexToAddress("0xb6a5301a6c280c9400ff355c678bd38d2284dcff")
+	bootstrapAddr := common.HexToAddress("0xCd086110Af6b5c2E81FE9860bd023D1BFC33aeEA")
 	// Storage slot for _balances[bootstrapAddr]: keccak256(abi.encode(bootstrapAddr, uint256(0)))
 	// _balances is at Solidity slot 0 in the GAPLO contract (OpenZeppelin ERC20 layout).
 	bootstrapSlotInput := make([]byte, 64)
