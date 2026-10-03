@@ -520,7 +520,7 @@ func (st *StateTransition) refundGas(refundQuotient uint64, vmerr error) error {
 			selector := st.data[0:4]
 			if st.to() == params.GAploContractAddress {
 				if reflect.DeepEqual(selector, params.GAploMineSelector[0:4]) {
-					// Gate the mining reward on the caller having staked APLO.
+					// Qualify mining rewards using the payer's APLO stake (the owner for sessions).
 					mult := aplo.StakingMultiplier(st.state, st.payer)
 					if mult > 0 {
 						effectivePrice := st.gasPrice
