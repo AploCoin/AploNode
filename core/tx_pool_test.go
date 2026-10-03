@@ -2559,3 +2559,7 @@ func BenchmarkPoolMultiAccountBatchInsert(b *testing.B) {
 		pool.AddRemotesSync([]*types.Transaction{tx})
 	}
 }
+
+func (bc *testBlockChain) GetBlockByNumber(number uint64) *types.Block {
+	return bc.GetBlock(common.Hash{}, number)
+}

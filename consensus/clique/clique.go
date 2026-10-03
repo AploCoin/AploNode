@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts"
+	"github.com/ethereum/go-ethereum/builtin/sessionkeys"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/consensus"
@@ -565,6 +566,13 @@ func (c *Clique) Prepare(chain consensus.ChainHeaderReader, header *types.Header
 // Finalize implements consensus.Engine, ensuring no uncles are set, nor block
 // rewards given.
 func (c *Clique) Finalize(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, txs []*types.Transaction, uncles []*types.Header) {
+	if err := sessionkeys.Activate(state, chain.Config(), header.Number); err != nil {
+		return
+	}
+	state.SetSessionKeysEnabled(chain.Config().IsSessionKeys(header.Number))
+	if chain.Config().IsSessionKeys(header.Number) {
+		sessionkeys.Cleanup(state, header.Number.Uint64())
+	}
 	// No block rewards in PoA, so the state remains as is and uncles are dropped
 	header.Root = state.IntermediateRoot(chain.Config().IsEIP158(header.Number))
 	header.UncleHash = types.CalcUncleHash(nil)
@@ -573,6 +581,10 @@ func (c *Clique) Finalize(chain consensus.ChainHeaderReader, header *types.Heade
 // FinalizeAndAssemble implements consensus.Engine, ensuring no uncles are set,
 // nor block rewards given, and returns the final block.
 func (c *Clique) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, txs []*types.Transaction, uncles []*types.Header, receipts []*types.Receipt) (*types.Block, error) {
+	if err := sessionkeys.Activate(state, chain.Config(), header.Number); err != nil {
+		return nil, err
+	}
+
 	// Finalize block
 	c.Finalize(chain, header, state, txs, uncles)
 

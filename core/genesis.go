@@ -25,6 +25,7 @@ import (
 	"math/big"
 	"strings"
 
+	"github.com/ethereum/go-ethereum/builtin/sessionkeys"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/common/math"
@@ -241,6 +242,11 @@ func SetupGenesisBlock(db ethdb.Database, genesis *Genesis) (*params.ChainConfig
 }
 
 func SetupGenesisBlockWithOverride(db ethdb.Database, genesis *Genesis, overrideTerminalTotalDifficulty *big.Int, overrideTerminalTotalDifficultyPassed *bool) (*params.ChainConfig, common.Hash, error) {
+	if genesis != nil {
+		if err := genesis.validateSessionKeys(); err != nil {
+			return genesis.Config, common.Hash{}, err
+		}
+	}
 	if genesis != nil && genesis.Config == nil {
 		return params.AllEthashProtocolChanges, common.Hash{}, errGenesisNoConfig
 	}
@@ -383,6 +389,9 @@ func (g *Genesis) ToBlock() *types.Block {
 // Commit writes the block and state of a genesis specification to the database.
 // The block is committed as the canonical head block.
 func (g *Genesis) Commit(db ethdb.Database) (*types.Block, error) {
+	if err := g.validateSessionKeys(); err != nil {
+		return nil, err
+	}
 	block := g.ToBlock()
 	if block.Number().Sign() != 0 {
 		return nil, errors.New("can't commit genesis block with number > 0")
@@ -587,4 +596,18 @@ func decodePrealloc(data string) GenesisAlloc {
 		ga[common.BigToAddress(account.Addr)] = GenesisAccount{Balance: account.Balance}
 	}
 	return ga
+}
+
+func (g *Genesis) validateSessionKeys() error {
+	if g.Config == nil || !g.Config.IsSessionKeys(common.Big0) {
+		return nil
+	}
+	registry := g.Alloc[sessionkeys.Address]
+	if len(registry.Code) != 0 || len(registry.Storage) != 0 {
+		return errors.New("session keys genesis registry code/storage must be empty")
+	}
+	if crypto.Keccak256Hash(g.Alloc[params.GAploContractAddress].Code) != crypto.Keccak256Hash(common.FromHex(params.GAPLO)) {
+		return errors.New("session keys genesis requires canonical GAplo")
+	}
+	return nil
 }

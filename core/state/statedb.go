@@ -24,6 +24,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/ethereum/go-ethereum/builtin/sessionkeys"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
@@ -62,10 +63,11 @@ func (n *proofList) Delete(key []byte) error {
 // * Contracts
 // * Accounts
 type StateDB struct {
-	db         Database
-	prefetcher *triePrefetcher
-	trie       Trie
-	hasher     crypto.KeccakState
+	sessionKeysEnabled bool // Derived from the current execution fork, not protocol data.
+	db                 Database
+	prefetcher         *triePrefetcher
+	trie               Trie
+	hasher             crypto.KeccakState
 
 	// originalRoot is the pre-state root, before any changes were made.
 	// It will be updated when the Commit is called.
@@ -379,6 +381,9 @@ func (s *StateDB) HasSuicided(addr common.Address) bool {
 
 // AddBalance adds amount to the account associated with addr.
 func (s *StateDB) AddBalance(addr common.Address, amount *big.Int) {
+	if s.sessionKeysEnabled {
+		addr = sessionkeys.Recipient(s, addr)
+	}
 	stateObject := s.GetOrNewStateObject(addr)
 	if stateObject != nil {
 		stateObject.AddBalance(amount)
@@ -645,6 +650,7 @@ func (db *StateDB) ForEachStorage(addr common.Address, cb func(key, value common
 func (s *StateDB) Copy() *StateDB {
 	// Copy all the basic fields, initialize the memory ones
 	state := &StateDB{
+		sessionKeysEnabled:  s.sessionKeysEnabled,
 		db:                  s.db,
 		trie:                s.db.CopyTrie(s.trie),
 		originalRoot:        s.originalRoot,
@@ -1056,3 +1062,9 @@ func (s *StateDB) AddressInAccessList(addr common.Address) bool {
 func (s *StateDB) SlotInAccessList(addr common.Address, slot common.Hash) (addressPresent bool, slotPresent bool) {
 	return s.accessList.Contains(addr, slot)
 }
+
+// SetSessionKeysEnabled derives recipient routing from the current chain fork.
+func (s *StateDB) SetSessionKeysEnabled(enabled bool) { s.sessionKeysEnabled = enabled }
+
+// SessionKeysEnabled reports the derived recipient-routing execution rule.
+func (s *StateDB) SessionKeysEnabled() bool { return s.sessionKeysEnabled }

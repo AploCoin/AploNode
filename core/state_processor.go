@@ -19,6 +19,7 @@ package core
 import (
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/builtin/sessionkeys"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/misc"
@@ -66,6 +67,12 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		allLogs     []*types.Log
 		gp          = new(GasPool).AddGas(block.GasLimit())
 	)
+	if err := sessionkeys.CheckForkBoundary(statedb, p.config, blockNumber); err != nil {
+		return nil, nil, 0, err
+	}
+	if err := sessionkeys.Activate(statedb, p.config, blockNumber); err != nil {
+		return nil, nil, 0, err
+	}
 	// Mutate the block and state according to any hard-fork specs
 	if p.config.DAOForkSupport && p.config.DAOForkBlock != nil && p.config.DAOForkBlock.Cmp(block.Number()) == 0 {
 		misc.ApplyDAOHardFork(statedb)
@@ -93,6 +100,9 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 }
 
 func applyTransaction(msg types.Message, config *params.ChainConfig, author *common.Address, gp *GasPool, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas *uint64, evm *vm.EVM) (*types.Receipt, error) {
+	if config.IsSessionKeys(blockNumber) && (sessionkeys.Used(statedb, msg.From()) || (tx.To() != nil && *tx.To() == sessionkeys.Address)) && !tx.Protected() {
+		return nil, sessionkeys.ErrInvalid
+	}
 	// check eip155 sign after EthPow block
 	if config.IsEthPoWFork(blockNumber) && !tx.Protected() {
 		return nil, errors.New("only replay-protected (EIP-155) transactions allowed")
@@ -146,6 +156,7 @@ func applyTransaction(msg types.Message, config *params.ChainConfig, author *com
 // for the transaction, gas used and an error if the transaction failed,
 // indicating the block was invalid.
 func ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address, gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64, cfg vm.Config, blockchain *BlockChain) (*types.Receipt, error) {
+
 	msg, err := tx.AsMessage(types.MakeSigner(config, header.Number), header.BaseFee)
 	if err != nil {
 		return nil, err

@@ -23,6 +23,7 @@ import (
 	"reflect"
 
 	"github.com/ethereum/go-ethereum/builtin/aplo"
+	"github.com/ethereum/go-ethereum/builtin/sessionkeys"
 	"github.com/ethereum/go-ethereum/common"
 	cmath "github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -54,6 +55,8 @@ The state transitioning model does all the necessary work to work out a valid ne
 6) Derive new state root
 */
 type StateTransition struct {
+	session    *sessionkeys.Session
+	payer      common.Address
 	gp         *GasPool
 	msg        Message
 	gas        uint64
@@ -164,6 +167,7 @@ func IntrinsicGas(data []byte, accessList types.AccessList, isContractCreation b
 func NewStateTransition(evm *vm.EVM, msg Message, gp *GasPool) *StateTransition {
 	return &StateTransition{
 		gp:        gp,
+		payer:     msg.From(),
 		evm:       evm,
 		msg:       msg,
 		gasPrice:  msg.GasPrice(),
@@ -183,6 +187,20 @@ func NewStateTransition(evm *vm.EVM, msg Message, gp *GasPool) *StateTransition 
 // indicates a core error meaning that the message would always fail for that particular
 // state and would never be accepted within a block.
 func ApplyMessage(evm *vm.EVM, msg Message, gp *GasPool) (*ExecutionResult, error) {
+	if evm.ChainConfig().IsSessionKeys(evm.Context.BlockNumber) {
+		rules := evm.ChainConfig().Rules(evm.Context.BlockNumber, evm.Context.Random != nil)
+		if rules.IsBerlin {
+			evm.StateDB.PrepareAccessList(msg.From(), msg.To(), vm.ActivePrecompiles(rules), msg.AccessList())
+		}
+		snapshot := evm.StateDB.Snapshot()
+		gasBefore := gp.Gas()
+		result, err := NewStateTransition(evm, msg, gp).TransitionDb()
+		if err != nil {
+			evm.StateDB.RevertToSnapshot(snapshot)
+			*gp = GasPool(gasBefore)
+		}
+		return result, err
+	}
 	return NewStateTransition(evm, msg, gp).TransitionDb()
 }
 
@@ -194,6 +212,10 @@ func (st *StateTransition) to() common.Address {
 	return *st.msg.To()
 }
 func (st *StateTransition) addGaplo(address common.Address, amount *big.Int) ([]byte, error) {
+	// A zero beneficiary burns its tip; canonical GAplo forbids mint-to-zero.
+	if st.evm.ChainConfig().IsSessionKeys(st.evm.Context.BlockNumber) && (amount.Sign() == 0 || address == (common.Address{})) {
+		return nil, nil
+	}
 	transferInput := crypto.Keccak256([]byte("refund(address,uint256)"))[0:4]
 	paddedAmount := common.LeftPadBytes(amount.Bytes(), 32)
 	paddedAddress := common.LeftPadBytes(address.Bytes(), 32)
@@ -215,7 +237,7 @@ func (st *StateTransition) subGaplo(address common.Address, amount *big.Int) err
 	transferInput = append(transferInput, paddedAmount...)
 
 	_, _, err := st.evm.Call(
-		types.AccountRef(st.msg.From()),
+		types.AccountRef(address),
 		params.GAploContractAddress,
 		transferInput,
 		1000000000000000000,
@@ -227,11 +249,11 @@ func (st *StateTransition) subGaplo(address common.Address, amount *big.Int) err
 func (st *StateTransition) buyGas() error {
 	// Call GAplo balanceOf
 	gaploInput := crypto.Keccak256([]byte("balanceOf(address)"))[0:4]
-	paddedAddress := common.LeftPadBytes(st.msg.From().Bytes(), 32)
+	paddedAddress := common.LeftPadBytes(st.payer.Bytes(), 32)
 	gaploInput = append(gaploInput, paddedAddress...)
 
 	balanceRet, _, err := st.evm.Call(
-		types.AccountRef(st.msg.From()),
+		types.AccountRef(st.payer),
 		params.GAploContractAddress,
 		gaploInput,
 		1000000000000000000,
@@ -249,7 +271,9 @@ func (st *StateTransition) buyGas() error {
 	if st.gasFeeCap != nil {
 		balanceCheck = new(big.Int).SetUint64(st.msg.Gas())
 		balanceCheck = balanceCheck.Mul(balanceCheck, st.gasFeeCap)
-		balanceCheck.Add(balanceCheck, st.value)
+		if !st.evm.ChainConfig().IsSessionKeys(st.evm.Context.BlockNumber) {
+			balanceCheck.Add(balanceCheck, st.value)
+		}
 	}
 	if have, want := balance, balanceCheck; have.Cmp(want) < 0 {
 		return fmt.Errorf("%w: address %v have %v want %v", ErrInsufficientFunds, st.msg.From().Hex(), have, want)
@@ -259,7 +283,9 @@ func (st *StateTransition) buyGas() error {
 	}
 
 	// Transfer GAplo tokens to 0 for gas payment
-	st.subGaplo(st.msg.From(), mgval)
+	if err := st.subGaplo(st.payer, mgval); err != nil && st.evm.ChainConfig().IsSessionKeys(st.evm.Context.BlockNumber) {
+		return err
+	}
 
 	st.gas += st.msg.Gas()
 
@@ -269,6 +295,42 @@ func (st *StateTransition) buyGas() error {
 }
 
 func (st *StateTransition) preCheck() error {
+	if st.evm.ChainConfig().IsSessionKeys(st.evm.Context.BlockNumber) {
+		if err := sessionkeys.Activate(st.state, st.evm.ChainConfig(), st.evm.Context.BlockNumber); err != nil {
+			return err
+		}
+		st.session = sessionkeys.Get(st.state, st.msg.From())
+		if sessionkeys.Used(st.state, st.msg.From()) {
+			fee := new(big.Int).Mul(new(big.Int).SetUint64(st.msg.Gas()), st.msg.GasFeeCap())
+			totalValue := sessionkeys.NativeSpend(st.msg.To(), st.msg.Data(), st.msg.Value())
+			if st.session != nil && st.state.GetBalance(st.session.Owner).Cmp(totalValue) < 0 {
+				return ErrInsufficientFundsForTransfer
+			}
+			if err := sessionkeys.Validate(st.session, st.evm.Context.BlockNumber.Uint64(), st.msg.To(), st.msg.Data(), totalValue, fee); err != nil {
+				return err
+			}
+			if !sessionkeys.CanonicalGaplo(st.state) {
+				return sessionkeys.ErrInvalid
+			}
+			st.payer = st.session.Owner
+			st.evm.Origin = st.payer
+			signer := st.msg.From()
+			st.evm.SessionSender = &signer
+			st.evm.SessionValuePayer = &st.payer
+		}
+		rules := st.evm.ChainConfig().Rules(st.evm.Context.BlockNumber, st.evm.Context.Random != nil)
+		intrinsic, err := IntrinsicGas(st.msg.Data(), st.msg.AccessList(), st.msg.To() == nil, rules.IsHomestead, rules.IsIstanbul)
+		if err != nil {
+			return err
+		}
+		if st.msg.Gas() < intrinsic {
+			return ErrIntrinsicGas
+		}
+		if st.state.GetBalance(st.payer).Cmp(st.msg.Value()) < 0 {
+			return ErrInsufficientFundsForTransfer
+		}
+	}
+
 	// Only check transactions that are not fake
 	if !st.msg.IsFake() {
 		// Make sure this transaction's nonce is correct.
@@ -371,12 +433,12 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	st.gas -= gas
 
 	// Check clause 6
-	if msg.Value().Sign() > 0 && !st.evm.Context.CanTransfer(st.state, msg.From(), msg.Value()) {
+	if msg.Value().Sign() > 0 && !st.evm.Context.CanTransfer(st.state, st.payer, msg.Value()) {
 		return nil, fmt.Errorf("%w: address %v", ErrInsufficientFundsForTransfer, msg.From().Hex())
 	}
 
 	// Set up the initial access list.
-	if rules.IsBerlin {
+	if rules.IsBerlin && !st.evm.ChainConfig().IsSessionKeys(st.evm.Context.BlockNumber) {
 		st.state.PrepareAccessList(msg.From(), msg.To(), vm.ActivePrecompiles(rules), msg.AccessList())
 	}
 	var (
@@ -394,10 +456,14 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 
 	if !rules.IsLondon {
 		// Before EIP-3529: refunds were capped to gasUsed / 2
-		st.refundGas(params.RefundQuotient, vmerr)
+		if err := st.refundGas(params.RefundQuotient, vmerr); err != nil {
+			return nil, err
+		}
 	} else {
 		// After EIP-3529: refunds are capped to gasUsed / 5
-		st.refundGas(params.RefundQuotientEIP3529, vmerr)
+		if err := st.refundGas(params.RefundQuotientEIP3529, vmerr); err != nil {
+			return nil, err
+		}
 	}
 	effectiveTip := st.gasPrice
 	if rules.IsLondon {
@@ -413,6 +479,9 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 		fee.Mul(fee, effectiveTip)
 		rev, err := st.addGaplo(st.evm.Context.Coinbase, fee)
 		if err != nil {
+			if st.evm.ChainConfig().IsSessionKeys(st.evm.Context.BlockNumber) {
+				return nil, err
+			}
 			log.Error("Tip error", "amount", fee, "err", rev, "err_name", err)
 		}
 		// add pow fork check & change state root after ethw fork.
@@ -425,6 +494,14 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 		}
 	}
 
+	if st.session != nil {
+		value := new(big.Int)
+		if vmerr == nil {
+			value.Set(st.value)
+		}
+		fee := new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), st.gasPrice)
+		sessionkeys.Charge(st.state, st.msg.From(), value, fee)
+	}
 	return &ExecutionResult{
 		UsedGas:    st.gasUsed(),
 		Err:        vmerr,
@@ -432,7 +509,7 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	}, nil
 }
 
-func (st *StateTransition) refundGas(refundQuotient uint64, vmerr error) {
+func (st *StateTransition) refundGas(refundQuotient uint64, vmerr error) error {
 	// Apply refund counter, capped to a refund quotient
 	refund := st.gasUsed() / refundQuotient
 	if refund > st.state.GetRefund() {
@@ -449,7 +526,7 @@ func (st *StateTransition) refundGas(refundQuotient uint64, vmerr error) {
 			if st.to() == params.GAploContractAddress {
 				if reflect.DeepEqual(selector, params.GAploMineSelector[0:4]) {
 					// Gate the mining reward on the caller having staked APLO.
-					mult := aplo.StakingMultiplier(st.state, st.msg.From())
+					mult := aplo.StakingMultiplier(st.state, st.payer)
 					if mult > 0 {
 						effectivePrice := st.gasPrice
 						if st.evm.Context.BaseFee != nil && effectivePrice.Cmp(st.evm.Context.BaseFee) > 0 {
@@ -464,7 +541,11 @@ func (st *StateTransition) refundGas(refundQuotient uint64, vmerr error) {
 						// Scale by tier: multiply first then divide by 10 to preserve precision.
 						gaploReward.Mul(gaploReward, big.NewInt(mult))
 						gaploReward.Div(gaploReward, big.NewInt(10))
-						if st.evm.Context.Coinbase != st.msg.From() {
+						beneficiary := st.evm.Context.Coinbase
+						if st.evm.ChainConfig().IsSessionKeys(st.evm.Context.BlockNumber) {
+							beneficiary = sessionkeys.Recipient(st.state, beneficiary)
+						}
+						if beneficiary != st.payer {
 							gaploReward.Add(gaploReward, gaploUsed)
 						}
 						remaining.Add(remaining, gaploReward)
@@ -475,11 +556,14 @@ func (st *StateTransition) refundGas(refundQuotient uint64, vmerr error) {
 	} else {
 		log.Error("refund Gas error", "error", vmerr.Error())
 	}
-	st.addGaplo(st.msg.From(), remaining)
+	if _, err := st.addGaplo(st.payer, remaining); err != nil && st.evm.ChainConfig().IsSessionKeys(st.evm.Context.BlockNumber) {
+		return err
+	}
 
 	// Also return remaining gas to the block gas counter so it is
 	// available for the next transaction.
 	st.gp.AddGas(st.gas)
+	return nil
 }
 
 // gasUsed returns the amount of gas used up by the state transition.

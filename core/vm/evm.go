@@ -21,7 +21,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"bytes"
 	"github.com/ethereum/go-ethereum/builtin"
+	"github.com/ethereum/go-ethereum/builtin/sessionkeys"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -98,6 +100,9 @@ type TxContext struct {
 //
 // The EVM should never be reused and is not thread safe.
 type EVM struct {
+	// SessionValuePayer applies solely to the authorized top-level CALL.
+	SessionValuePayer *common.Address
+	SessionSender     *common.Address
 	// Context provides auxiliary blockchain related information
 	Context BlockContext
 	TxContext
@@ -140,6 +145,9 @@ func NewEVM(blockCtx BlockContext, txCtx TxContext, statedb types.StateDB, chain
 		chainRules:  chainConfig.Rules(blockCtx.BlockNumber, blockCtx.Random != nil),
 		blockchain:  blockchain,
 	}
+	if db, ok := statedb.(interface{ SetSessionKeysEnabled(bool) }); ok {
+		db.SetSessionKeysEnabled(chainConfig.IsSessionKeys(blockCtx.BlockNumber))
+	}
 	evm.interpreter = NewEVMInterpreter(evm, config)
 	return evm
 }
@@ -147,6 +155,11 @@ func NewEVM(blockCtx BlockContext, txCtx TxContext, statedb types.StateDB, chain
 // Reset resets the EVM with a new transaction context.Reset
 // This is not threadsafe and should only be done very cautiously.
 func (evm *EVM) Reset(txCtx TxContext, statedb types.StateDB) {
+	evm.SessionValuePayer = nil
+	evm.SessionSender = nil
+	if db, ok := statedb.(interface{ SetSessionKeysEnabled(bool) }); ok {
+		db.SetSessionKeysEnabled(evm.chainConfig.IsSessionKeys(evm.Context.BlockNumber))
+	}
 	evm.TxContext = txCtx
 	evm.StateDB = statedb
 }
@@ -192,15 +205,21 @@ func (evm *EVM) Call(caller types.ContractRef, addr common.Address, input []byte
 	if evm.depth > int(params.CallCreateDepth) {
 		return nil, gas, ErrDepth
 	}
+	payer := caller.Address()
+	if evm.depth == 0 && evm.SessionValuePayer != nil && evm.SessionSender != nil && caller.Address() == *evm.SessionSender {
+		payer = *evm.SessionValuePayer
+	}
 	// Fail if we're trying to transfer more than the available balance
-	if value.Sign() != 0 && !evm.Context.CanTransfer(evm.StateDB, caller.Address(), value) {
+	if value.Sign() != 0 && !evm.Context.CanTransfer(evm.StateDB, payer, value) {
 		return nil, gas, ErrInsufficientBalance
 	}
 	snapshot := evm.StateDB.Snapshot()
 	p, isPrecompile := evm.precompile(addr)
+	_, isBuiltin := builtin.BuiltInContracts[addr]
+	isBuiltin = isBuiltin && evm.chainConfig.IsSessionKeys(evm.Context.BlockNumber)
 
 	if !evm.StateDB.Exist(addr) {
-		if !isPrecompile && evm.chainRules.IsEIP158 && value.Sign() == 0 {
+		if !isPrecompile && !isBuiltin && !evm.isSessionRegistry(addr) && evm.chainRules.IsEIP158 && value.Sign() == 0 {
 			// Calling a non existing account, don't do anything, but ping the tracer
 			if evm.Config.Debug {
 				if evm.depth == 0 {
@@ -215,7 +234,7 @@ func (evm *EVM) Call(caller types.ContractRef, addr common.Address, input []byte
 		}
 		evm.StateDB.CreateAccount(addr)
 	}
-	evm.Context.Transfer(evm.StateDB, caller.Address(), addr, value)
+	evm.Context.Transfer(evm.StateDB, payer, addr, value)
 
 	// Capture the tracer start/end events in debug mode
 	if evm.Config.Debug {
@@ -233,7 +252,21 @@ func (evm *EVM) Call(caller types.ContractRef, addr common.Address, input []byte
 		}
 	}
 
-	if isPrecompile {
+	if evm.isSessionRegistry(addr) {
+		readOnly := evm.interpreter.readOnly
+		// Mutations require the immediate signed EOA caller, never tx.origin alone.
+		isView := len(input) >= 4 && bytes.Equal(input[:4], sessionkeys.ABI.Methods["getSession"].ID)
+		if value.Sign() != 0 || (!readOnly && !isView && (evm.depth != 0 || caller.Address() != evm.Origin || sessionkeys.Used(evm.StateDB, caller.Address()) || evm.StateDB.GetCodeSize(caller.Address()) != 0)) {
+			err = ErrExecutionReverted
+		} else {
+			ret, gas, err = sessionkeys.Run(evm.StateDB, caller.Address(), input, gas, evm.Context.BlockNumber.Uint64(), readOnly, evm.sessionChainID())
+			if err == sessionkeys.ErrOutOfGas {
+				err = ErrOutOfGas
+			} else if err != nil {
+				err = ErrExecutionReverted
+			}
+		}
+	} else if isPrecompile {
 		ret, gas, err = RunPrecompiledContract(p, input, gas)
 	} else if _, ok := builtin.BuiltInContracts[addr]; ok {
 		// Built-in contracts are dispatched before the len(code)==0 short-circuit
@@ -247,6 +280,9 @@ func (evm *EVM) Call(caller types.ContractRef, addr common.Address, input []byte
 			addrCopy := addr
 			contract := NewContract(caller, types.AccountRef(addrCopy), value, gas)
 			contract.SetCallCode(&addrCopy, evm.StateDB.GetCodeHash(addrCopy), code)
+			if evm.chainConfig.IsSessionKeys(evm.Context.BlockNumber) && addr == params.GAploContractAddress && sessionkeys.CanonicalGaplo(evm.StateDB) {
+				input = evm.sessionGaploInput(input)
+			}
 			ret, err = evm.interpreter.Run(contract, input, false)
 			gas = contract.Gas
 		}
@@ -274,6 +310,10 @@ func (evm *EVM) Call(caller types.ContractRef, addr common.Address, input []byte
 // CallCode differs from Call in the sense that it executes the given address'
 // code with the caller as context.
 func (evm *EVM) CallCode(caller types.ContractRef, addr common.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
+	if evm.isSessionRegistry(addr) {
+		return nil, gas, ErrExecutionReverted
+	}
+
 	// Fail if we're trying to execute above the call depth limit
 	if evm.depth > int(params.CallCreateDepth) {
 		return nil, gas, ErrDepth
@@ -321,6 +361,10 @@ func (evm *EVM) CallCode(caller types.ContractRef, addr common.Address, input []
 // DelegateCall differs from CallCode in the sense that it executes the given address'
 // code with the caller as context and the caller is set to the caller of the caller.
 func (evm *EVM) DelegateCall(caller types.ContractRef, addr common.Address, input []byte, gas uint64) (ret []byte, leftOverGas uint64, err error) {
+	if evm.isSessionRegistry(addr) {
+		return nil, gas, ErrExecutionReverted
+	}
+
 	// Fail if we're trying to execute above the call depth limit
 	if evm.depth > int(params.CallCreateDepth) {
 		return nil, gas, ErrDepth
@@ -362,6 +406,16 @@ func (evm *EVM) DelegateCall(caller types.ContractRef, addr common.Address, inpu
 // Opcodes that attempt to perform such modifications will result in exceptions
 // instead of performing the modifications.
 func (evm *EVM) StaticCall(caller types.ContractRef, addr common.Address, input []byte, gas uint64) (ret []byte, leftOverGas uint64, err error) {
+	if evm.isSessionRegistry(addr) {
+		ret, left, err := sessionkeys.Run(evm.StateDB, caller.Address(), input, gas, evm.Context.BlockNumber.Uint64(), true, evm.sessionChainID())
+		if err == sessionkeys.ErrOutOfGas {
+			err = ErrOutOfGas
+		} else if err != nil {
+			err = ErrExecutionReverted
+		}
+		return ret, left, err
+	}
+
 	// Fail if we're trying to execute above the call depth limit
 	if evm.depth > int(params.CallCreateDepth) {
 		return nil, gas, ErrDepth
@@ -445,6 +499,9 @@ func (evm *EVM) create(caller types.ContractRef, codeAndHash *codeAndHash, gas u
 	}
 	// Ensure there's no existing contract already at the designated address
 	_, ok := builtin.BuiltInContracts[address]
+	if evm.chainConfig.IsSessionKeys(evm.Context.BlockNumber) && (sessionkeys.Used(evm.StateDB, address) || address == sessionkeys.Address) {
+		ok = true
+	}
 	if ok {
 		return nil, common.Address{}, 0, ErrContractAddressCollision
 	}
@@ -538,3 +595,46 @@ func (evm *EVM) Create2(caller types.ContractRef, code []byte, gas uint64, endow
 
 // ChainConfig returns the environment's chain configuration
 func (evm *EVM) ChainConfig() *params.ChainConfig { return evm.chainConfig }
+
+func (evm *EVM) isSessionRegistry(addr common.Address) bool {
+	return addr == sessionkeys.Address && evm.chainConfig.IsSessionKeys(evm.Context.BlockNumber)
+}
+
+// Canonical GAplo exposes only these address-taking credit paths. This fork
+// redirects recipient ABI words before execution while preserving contract state.
+func (evm *EVM) sessionGaploInput(input []byte) []byte {
+	if len(input) < 4 {
+		return input
+	}
+	offset := -1
+	for _, sig := range []string{"transfer(address,uint256)", "refund(address,uint256)"} {
+		if bytes.Equal(input[:4], crypto.Keccak256([]byte(sig))[:4]) && len(input) >= 68 {
+			offset = 4
+		}
+	}
+	if bytes.Equal(input[:4], crypto.Keccak256([]byte("transferFrom(address,address,uint256)"))[:4]) && len(input) >= 100 {
+		offset = 36
+	}
+	if offset < 0 {
+		return input
+	}
+	a := common.BytesToAddress(input[offset : offset+32])
+	to := sessionkeys.Recipient(evm.StateDB, a)
+	if a == to {
+		return input
+	}
+	out := common.CopyBytes(input)
+	copy(out[offset:offset+32], common.LeftPadBytes(to[:], 32))
+	return out
+}
+
+func (evm *EVM) sessionChainID() *big.Int {
+	id := evm.chainConfig.ChainID
+	if evm.chainConfig.IsEthPoWFork(evm.Context.BlockNumber) {
+		id = evm.chainConfig.ChainID_ALT
+	}
+	if id == nil {
+		return new(big.Int)
+	}
+	return id
+}

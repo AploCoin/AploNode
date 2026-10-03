@@ -25,6 +25,7 @@ import (
 	"time"
 
 	mapset "github.com/deckarep/golang-set"
+	"github.com/ethereum/go-ethereum/builtin/sessionkeys"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/consensus"
@@ -651,13 +652,24 @@ func (ethash *Ethash) Prepare(chain consensus.ChainHeaderReader, header *types.H
 // setting the final state on the header
 func (ethash *Ethash) Finalize(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, txs []*types.Transaction, uncles []*types.Header) {
 	// Accumulate any block and uncle rewards and commit the final state root
+	if err := sessionkeys.Activate(state, chain.Config(), header.Number); err != nil {
+		return
+	}
+	state.SetSessionKeysEnabled(chain.Config().IsSessionKeys(header.Number))
 	accumulateRewards(chain.Config(), state, header, uncles)
+	if chain.Config().IsSessionKeys(header.Number) {
+		sessionkeys.Cleanup(state, header.Number.Uint64())
+	}
 	header.Root = state.IntermediateRoot(chain.Config().IsEIP158(header.Number))
 }
 
 // FinalizeAndAssemble implements consensus.Engine, accumulating the block and
 // uncle rewards, setting the final state and assembling the block.
 func (ethash *Ethash) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, txs []*types.Transaction, uncles []*types.Header, receipts []*types.Receipt) (*types.Block, error) {
+	if err := sessionkeys.Activate(state, chain.Config(), header.Number); err != nil {
+		return nil, err
+	}
+
 	// Finalize block
 	ethash.Finalize(chain, header, state, txs, uncles)
 

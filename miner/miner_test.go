@@ -279,3 +279,8 @@ func createMiner(t *testing.T) (*Miner, *event.TypeMux, func(skipMiner bool)) {
 	}
 	return miner, mux, cleanup
 }
+
+// GetBlockByNumber satisfies the builtin EVM blockchain context.
+func (bc *testBlockChain) GetBlockByNumber(number uint64) *types.Block {
+	return bc.GetBlock(common.Hash{}, number)
+}

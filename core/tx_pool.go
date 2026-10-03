@@ -17,6 +17,7 @@
 package core
 
 import (
+	"bytes"
 	"errors"
 	"math"
 	"math/big"
@@ -25,6 +26,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ethereum/go-ethereum/builtin/sessionkeys"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/prque"
 	"github.com/ethereum/go-ethereum/consensus/misc"
@@ -631,19 +633,47 @@ func (pool *TxPool) validateTx(tx *types.Transaction, local bool) error {
 	if pool.currentState.GetNonce(from) > tx.Nonce() {
 		return ErrNonceTooLow
 	}
+	if pool.sessionKeysActive() && tx.To() != nil && *tx.To() == sessionkeys.Address && !tx.Protected() {
+		return sessionkeys.ErrInvalid
+	}
+	payer := from
+	if pool.sessionKeysActive() && sessionkeys.Used(pool.currentState, from) {
+		session := sessionkeys.Get(pool.currentState, from)
+		fee := new(big.Int).Mul(tx.GasFeeCap(), new(big.Int).SetUint64(tx.Gas()))
+		if !tx.Protected() || tx.Nonce() == math.MaxUint64 || !sessionkeys.CanonicalGaplo(pool.currentState) {
+			return sessionkeys.ErrInvalid
+		}
+		if err := sessionkeys.Validate(session, pool.chain.CurrentBlock().NumberU64()+1, tx.To(), tx.Data(), sessionkeys.NativeSpend(tx.To(), tx.Data(), tx.Value()), fee); err != nil {
+			return err
+		}
+		payer = session.Owner
+	}
 	// Transactor should have enough funds to cover the costs
 	// cost == V + GP * GL
-	if pool.currentState.GetBalance(from).Cmp(tx.Value()) < 0 {
+	spend := tx.Value()
+	if pool.sessionKeysActive() {
+		spend = sessionkeys.NativeSpend(tx.To(), tx.Data(), tx.Value())
+	}
+	if pool.currentState.GetBalance(payer).Cmp(spend) < 0 {
 		log.Warn("TX pool", "gaplo", "bruh")
 		return ErrInsufficientFunds
 	}
 	// Check if there is enough Gaplo to cover fees
-	message, err := tx.AsMessage(pool.signer, pool.priced.floating.baseFee)
-	address := message.From()
+	_, err = tx.AsMessage(pool.signer, pool.priced.floating.baseFee)
+	address := payer
+	if err != nil {
+		return err
+	}
 	gaploBalance, err := GetGaploBalance(pool, pool.currentState, &address, pool.priced.floating.baseFee, 10000000000000000000)
-	gas := new(big.Int).Mul(tx.GasPrice(), new(big.Int).SetUint64(tx.Gas()))
+	gas := new(big.Int).Mul(tx.GasFeeCap(), new(big.Int).SetUint64(tx.Gas()))
+	if err != nil {
+		return err
+	}
 	if gaploBalance.Cmp(gas) < 0 {
 		log.Warn("TX pool", "gaplo", gaploBalance)
+		return ErrInsufficientFunds
+	}
+	if !pool.canReserveSessionFunds(from, tx) {
 		return ErrInsufficientFunds
 	}
 	// Ensure the transaction has more gas than the basic tx fee.
@@ -1343,7 +1373,13 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) []*types.Trans
 		if err != nil {
 			gaploBalance = big.NewInt(0)
 		}
-		drops, _ := list.Filter(pool.currentState.GetBalance(addr), gaploBalance, pool.currentMaxGas)
+		aploBalance, sessionGas := pool.sessionPoolBalances(addr)
+		if sessionGas != nil {
+			gaploBalance = sessionGas
+		}
+		drops, _ := list.Filter(aploBalance, gaploBalance, pool.currentMaxGas)
+		policyDrops, _ := list.FilterSession(func(tx *types.Transaction) bool { return pool.validSessionQueued(addr, tx) })
+		drops = append(drops, policyDrops...)
 		for _, tx := range drops {
 			hash := tx.Hash()
 			pool.all.Remove(hash)
@@ -1353,7 +1389,13 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) []*types.Trans
 
 		// Gather all executable transactions and promote them
 		readies := list.Ready(pool.pendingNonces.get(addr))
-		for _, tx := range readies {
+		for i, tx := range readies {
+			if !pool.canReserveSessionFunds(addr, tx) {
+				for _, later := range readies[i:] {
+					pool.enqueueTx(later.Hash(), later, pool.locals.contains(addr), false)
+				}
+				break
+			}
 			hash := tx.Hash()
 			if pool.promoteTx(addr, hash, tx) {
 				promoted = append(promoted, tx)
@@ -1544,7 +1586,16 @@ func (pool *TxPool) demoteUnexecutables() {
 		if err != nil {
 			gaploBalance = big.NewInt(0)
 		}
-		drops, invalids := list.Filter(pool.currentState.GetBalance(addr), gaploBalance, pool.currentMaxGas)
+		aploBalance, sessionGas := pool.sessionPoolBalances(addr)
+		if sessionGas != nil {
+			gaploBalance = sessionGas
+		}
+		drops, invalids := list.Filter(aploBalance, gaploBalance, pool.currentMaxGas)
+		policyDrops, policyInvalids := list.FilterSession(func(tx *types.Transaction) bool {
+			return pool.validSessionQueued(addr, tx)
+		})
+		drops = append(drops, policyDrops...)
+		invalids = append(invalids, policyInvalids...)
 		for _, tx := range drops {
 			hash := tx.Hash()
 			log.Trace("Removed unpayable pending transaction", "hash", hash)
@@ -1582,6 +1633,7 @@ func (pool *TxPool) demoteUnexecutables() {
 			delete(pool.pending, addr)
 		}
 	}
+	pool.demoteSessionReservations()
 }
 
 // addressByHeartbeat is an account address tagged with its last activity timestamp.
@@ -1867,7 +1919,7 @@ func GetGaploBalance(pool *TxPool, state *state.StateDB, address *common.Address
 			Origin:   *address,
 			GasPrice: gasPrice,
 		},
-		state,
+		state.Copy(),
 		pool.chainconfig, vm.Config{NoBaseFee: true},
 		pool.chain,
 	)
@@ -1889,4 +1941,140 @@ func GetGaploBalance(pool *TxPool, state *state.StateDB, address *common.Address
 
 	balance := new(big.Int).SetBytes(balanceRet)
 	return balance, nil
+}
+
+func (pool *TxPool) sessionKeysActive() bool {
+	if pool.chainconfig.SessionKeysBlock == nil {
+		return false
+	}
+	return pool.chainconfig.IsSessionKeys(new(big.Int).Add(pool.chain.CurrentBlock().Number(), big.NewInt(1)))
+}
+func (pool *TxPool) sessionPoolBalances(addr common.Address) (*big.Int, *big.Int) {
+	if !pool.sessionKeysActive() || !sessionkeys.Used(pool.currentState, addr) {
+		return pool.currentState.GetBalance(addr), nil
+	}
+	s := sessionkeys.Get(pool.currentState, addr)
+	if s == nil || pool.chain.CurrentBlock().NumberU64()+1 > s.Expiry {
+		return new(big.Int), new(big.Int)
+	}
+	a := new(big.Int).Set(pool.currentState.GetBalance(s.Owner))
+	if a.Cmp(s.AploSpent) > 0 {
+		a.Set(s.AploSpent)
+	}
+	g := sessionkeys.GaploBalance(pool.currentState, s.Owner)
+	if g.Cmp(s.GAploSpent) > 0 {
+		g.Set(s.GAploSpent)
+	}
+	return a, g
+}
+
+func (pool *TxPool) validSessionQueued(addr common.Address, tx *types.Transaction) bool {
+	if !pool.sessionKeysActive() || !sessionkeys.Used(pool.currentState, addr) {
+		return true
+	}
+	s := sessionkeys.Get(pool.currentState, addr)
+	fee := new(big.Int).Mul(tx.GasFeeCap(), new(big.Int).SetUint64(tx.Gas()))
+	spend := sessionkeys.NativeSpend(tx.To(), tx.Data(), tx.Value())
+	return tx.Protected() && tx.Nonce() != math.MaxUint64 && s != nil && pool.currentState.GetBalance(s.Owner).Cmp(spend) >= 0 && sessionkeys.Validate(s, pool.chain.CurrentBlock().NumberU64()+1, tx.To(), tx.Data(), spend, fee) == nil
+}
+
+// canReserveSessionFunds bounds executable pending transactions conservatively
+// by fee caps, across signer lanes sharing the same owner. It is mempool policy;
+// serial StateTransition validation remains the consensus authority.
+func (pool *TxPool) canReserveSessionFunds(from common.Address, tx *types.Transaction) bool {
+	if !pool.sessionKeysActive() {
+		return true
+	}
+	payer := from
+	s := sessionkeys.Get(pool.currentState, from)
+	if s != nil {
+		payer = s.Owner
+	}
+	native := sessionkeys.NativeSpend(tx.To(), tx.Data(), tx.Value())
+	gas := new(big.Int).Mul(tx.GasFeeCap(), new(big.Int).SetUint64(tx.Gas()))
+	keyNative := new(big.Int).Set(native)
+	keyGas := new(big.Int).Set(gas)
+	for signer, list := range pool.pending {
+		other := sessionkeys.Get(pool.currentState, signer)
+		funding := signer
+		if other != nil {
+			funding = other.Owner
+		} else if sessionkeys.Used(pool.currentState, signer) {
+			continue
+		}
+		if funding != payer {
+			continue
+		}
+		for _, pending := range list.Flatten() {
+			if signer == from && pending.Nonce() == tx.Nonce() {
+				continue
+			}
+			amount := sessionkeys.NativeSpend(pending.To(), pending.Data(), pending.Value())
+			fee := new(big.Int).Mul(pending.GasFeeCap(), new(big.Int).SetUint64(pending.Gas()))
+			native.Add(native, amount)
+			gas.Add(gas, fee)
+			if signer == from {
+				keyNative.Add(keyNative, amount)
+				keyGas.Add(keyGas, fee)
+			}
+		}
+	}
+	if s != nil && (keyNative.Cmp(s.AploSpent) > 0 || keyGas.Cmp(s.GAploSpent) > 0) {
+		return false
+	}
+	return pool.currentState.GetBalance(payer).Cmp(native) >= 0 && sessionkeys.GaploBalance(pool.currentState, payer).Cmp(gas) >= 0
+}
+
+// demoteSessionReservations keeps funded nonce prefixes, returning their
+// unfundable suffixes to the queue. Signer ordering is deterministic pool policy.
+func (pool *TxPool) demoteSessionReservations() {
+	if !pool.sessionKeysActive() {
+		return
+	}
+	accounts := make([]common.Address, 0, len(pool.pending))
+	for addr := range pool.pending {
+		accounts = append(accounts, addr)
+	}
+	sort.Slice(accounts, func(i, j int) bool { return bytes.Compare(accounts[i][:], accounts[j][:]) < 0 })
+	nativeLeft := make(map[common.Address]*big.Int)
+	gasLeft := make(map[common.Address]*big.Int)
+	for _, addr := range accounts {
+		list := pool.pending[addr]
+		s := sessionkeys.Get(pool.currentState, addr)
+		payer := addr
+		if s != nil {
+			payer = s.Owner
+		}
+		if nativeLeft[payer] == nil {
+			nativeLeft[payer] = new(big.Int).Set(pool.currentState.GetBalance(payer))
+			gasLeft[payer] = sessionkeys.GaploBalance(pool.currentState, payer)
+		}
+		var keyNative, keyGas *big.Int
+		if s != nil {
+			keyNative = new(big.Int).Set(s.AploSpent)
+			keyGas = new(big.Int).Set(s.GAploSpent)
+		}
+		for _, tx := range list.Flatten() {
+			amount := sessionkeys.NativeSpend(tx.To(), tx.Data(), tx.Value())
+			fee := new(big.Int).Mul(tx.GasFeeCap(), new(big.Int).SetUint64(tx.Gas()))
+			if amount.Cmp(nativeLeft[payer]) > 0 || fee.Cmp(gasLeft[payer]) > 0 || (s != nil && (amount.Cmp(keyNative) > 0 || fee.Cmp(keyGas) > 0)) {
+				suffix := list.txs.Filter(func(pending *types.Transaction) bool { return pending.Nonce() >= tx.Nonce() })
+				for _, pending := range suffix {
+					pool.enqueueTx(pending.Hash(), pending, pool.locals.contains(addr), false)
+				}
+				pool.pendingNonces.setIfLower(addr, tx.Nonce())
+				pendingGauge.Dec(int64(len(suffix)))
+				if list.Empty() {
+					delete(pool.pending, addr)
+				}
+				break
+			}
+			nativeLeft[payer].Sub(nativeLeft[payer], amount)
+			gasLeft[payer].Sub(gasLeft[payer], fee)
+			if s != nil {
+				keyNative.Sub(keyNative, amount)
+				keyGas.Sub(keyGas, fee)
+			}
+		}
+	}
 }
