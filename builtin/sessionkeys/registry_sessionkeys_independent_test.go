@@ -14,6 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 )
 
+// independentRegistryState creates a fresh trie with the canonical GAplo runtime.
 func independentRegistryState(t *testing.T) *state.StateDB {
 	t.Helper()
 	db, err := state.New(common.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()), nil)
@@ -21,6 +22,7 @@ func independentRegistryState(t *testing.T) *state.StateDB {
 		t.Fatal(err)
 	}
 	db.SetCode(params.GAploContractAddress, common.FromHex(params.GAPLO))
+	db.SetNonce(registry.Address, 1)
 	return db
 }
 
@@ -28,10 +30,20 @@ func independentAddress(n uint64) common.Address {
 	return common.BigToAddress(new(big.Int).SetUint64(n))
 }
 
-func independentSessionProof(t *testing.T, signer *ecdsa.PrivateKey, owner, key, target common.Address, selectors [][4]byte, aplo, gaplo, expiry, chainID *big.Int) []byte {
+// independentSessionProof signs a registry creation payload with the key being registered.
+func independentSessionProof(
+	t *testing.T,
+	signer *ecdsa.PrivateKey,
+	owner, key, target common.Address,
+	selectors [][4]byte,
+	aplo, gaplo, expiry, chainID *big.Int,
+) []byte {
 	t.Helper()
 	if crypto.PubkeyToAddress(signer.PublicKey) != key {
-		t.Fatalf("proof signer address %s does not match claimed session key %s", crypto.PubkeyToAddress(signer.PublicKey), key)
+		t.Fatalf(
+			"proof signer address %s does not match claimed session key %s",
+			crypto.PubkeyToAddress(signer.PublicKey), key,
+		)
 	}
 	hash := registry.ProofHash(owner, key, target, selectors, aplo, gaplo, expiry, chainID)
 	proof, err := crypto.Sign(hash[:], signer)
@@ -41,17 +53,33 @@ func independentSessionProof(t *testing.T, signer *ecdsa.PrivateKey, owner, key,
 	return proof
 }
 
-func independentPackCreate(t *testing.T, owner common.Address, signer *ecdsa.PrivateKey, key, target common.Address, selectors [][4]byte, aplo, gaplo, expiry, chainID *big.Int) []byte {
+// independentPackCreate builds the canonical ABI call, including its proof of possession.
+func independentPackCreate(
+	t *testing.T,
+	owner common.Address,
+	signer *ecdsa.PrivateKey,
+	key, target common.Address,
+	selectors [][4]byte,
+	aplo, gaplo, expiry, chainID *big.Int,
+) []byte {
 	t.Helper()
 	proof := independentSessionProof(t, signer, owner, key, target, selectors, aplo, gaplo, expiry, chainID)
-	input, err := registry.ABI.Pack("CreateSessionKey", key, target, selectors, aplo, gaplo, expiry, proof)
+	input, err := registry.ABI.Pack(
+		"CreateSessionKey", key, target, selectors, aplo, gaplo, expiry, proof,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return input
 }
 
-func independentCreate(db *state.StateDB, owner, key common.Address, block, expiry uint64, selectors ...[4]byte) error {
+// independentCreate seeds trusted registry state without exercising the public ABI.
+func independentCreate(
+	db *state.StateDB,
+	owner, key common.Address,
+	block, expiry uint64,
+	selectors ...[4]byte,
+) error {
 	return registry.Create(db, owner, key, independentAddress(0x9000), selectors,
 		big.NewInt(50), big.NewInt(70), expiry, block)
 }
@@ -67,7 +95,10 @@ func TestRegistrySessionKeysIndependentAccountingAndRevocation(t *testing.T) {
 	db.SetBalance(owner, big.NewInt(1000))
 	db.SetNonce(owner, 91)
 
-	if err := registry.Create(db, owner, key, target, [][4]byte{selector}, big.NewInt(50), big.NewInt(70), 1100, 100); err != nil {
+	if err := registry.Create(
+		db, owner, key, target, [][4]byte{selector},
+		big.NewInt(50), big.NewInt(70), 1100, 100,
+	); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	s := registry.Get(db, key)
@@ -82,26 +113,40 @@ func TestRegistrySessionKeysIndependentAccountingAndRevocation(t *testing.T) {
 	}
 
 	data := append(selector[:], make([]byte, 32)...)
-	if err := registry.Validate(s, s.Expiry, &target, data, big.NewInt(12), big.NewInt(18)); err != nil {
+	if err := registry.Validate(
+		s, s.Expiry, &target, data, big.NewInt(12), big.NewInt(18),
+	); err != nil {
 		t.Fatalf("session should be valid through its expiry block: %v", err)
 	}
-	if err := registry.Validate(s, s.Expiry+1, &target, data, big.NewInt(12), big.NewInt(18)); err == nil {
+	if err := registry.Validate(
+		s, s.Expiry+1, &target, data, big.NewInt(12), big.NewInt(18),
+	); err == nil {
 		t.Fatal("session remained valid after its expiry block")
 	}
-	if err := registry.Validate(s, 1100, &independentAddressValue, data, big.NewInt(12), big.NewInt(18)); err == nil {
+	if err := registry.Validate(
+		s, 1100, &independentAddressValue, data, big.NewInt(12), big.NewInt(18),
+	); err == nil {
 		t.Fatal("session accepted a different target")
 	}
-	if err := registry.Validate(s, 1100, &target, selector[:3], big.NewInt(12), big.NewInt(18)); err == nil {
+	if err := registry.Validate(
+		s, 1100, &target, selector[:3], big.NewInt(12), big.NewInt(18),
+	); err == nil {
 		t.Fatal("session accepted short selector input")
 	}
-	if err := registry.Validate(s, 1100, &target, data, big.NewInt(51), big.NewInt(18)); err == nil {
+	if err := registry.Validate(
+		s, 1100, &target, data, big.NewInt(51), big.NewInt(18),
+	); err == nil {
 		t.Fatal("session exceeded its APLO allowance")
 	}
-	if err := registry.Validate(s, 1100, &target, data, big.NewInt(12), big.NewInt(71)); err == nil {
+	if err := registry.Validate(
+		s, 1100, &target, data, big.NewInt(12), big.NewInt(71),
+	); err == nil {
 		t.Fatal("session exceeded its GAplo allowance")
 	}
 	wrongSelector := append([]byte{0x87, 0x65, 0x43, 0x21}, make([]byte, 32)...)
-	if err := registry.Validate(s, 1100, &target, wrongSelector, big.NewInt(12), big.NewInt(18)); err == nil {
+	if err := registry.Validate(
+		s, 1100, &target, wrongSelector, big.NewInt(12), big.NewInt(18),
+	); err == nil {
 		t.Fatal("session accepted an unlisted selector")
 	}
 
@@ -147,16 +192,23 @@ func TestRegistrySessionKeysIndependentExpiryBoundsAndOverflow(t *testing.T) {
 		t.Fatalf("session must remain valid for block 1100: %v", err)
 	}
 	registry.Cleanup(db, 1100)
-	if registry.Get(db, key) != nil || db.GetState(registry.Address, registry.Slot("ownerCount", owner, 0)).Big().Sign() != 0 || db.GetState(registry.Address, registry.Slot("bucketCount", independentBucket(1100), 0)).Big().Sign() != 0 {
+	if registry.Get(db, key) != nil ||
+		db.GetState(registry.Address, registry.Slot("ownerCount", owner, 0)).Big().Sign() != 0 ||
+		db.GetState(registry.Address, registry.Slot("bucketCount", independentBucket(1100), 0)).Big().Sign() != 0 {
 		t.Fatal("expiry cleanup left a live session or stale index entry")
 	}
 
 	max := ^uint64(0)
 	maxOwner, maxKey := independentAddress(0xa1), independentAddress(0xb1)
-	if err := independentCreate(db, maxOwner, maxKey, max-registry.MaxLifetime, max, selector); err != nil {
+	if err := independentCreate(
+		db, maxOwner, maxKey, max-registry.MaxLifetime, max, selector,
+	); err != nil {
 		t.Fatalf("non-wrapping maximum block expiry should be accepted: %v", err)
 	}
-	if err := independentCreate(db, independentAddress(0xa2), independentAddress(0xb2), max-registry.MaxLifetime+1, max, selector); err == nil {
+	if err := independentCreate(
+		db, independentAddress(0xa2), independentAddress(0xb2),
+		max-registry.MaxLifetime+1, max, selector,
+	); err == nil {
 		t.Fatal("expiry arithmetic wrapped near MaxUint64")
 	}
 
@@ -174,7 +226,11 @@ func TestRegistrySessionKeysIndependentExpiryBoundsAndOverflow(t *testing.T) {
 	for i, test := range invalid {
 		t.Run(test.name, func(t *testing.T) {
 			fresh := independentRegistryState(t)
-			if err := registry.Create(fresh, independentAddress(0xc0), independentAddress(uint64(0xd0+i)), independentAddress(0x9000), test.choices, big.NewInt(1), big.NewInt(1), test.expiry, test.block); err == nil {
+			if err := registry.Create(
+				fresh, independentAddress(0xc0), independentAddress(uint64(0xd0+i)),
+				independentAddress(0x9000), test.choices,
+				big.NewInt(1), big.NewInt(1), test.expiry, test.block,
+			); err == nil {
 				t.Fatal("invalid creation succeeded")
 			}
 		})
@@ -199,7 +255,9 @@ func TestRegistrySessionKeysIndependentOwnerAndExpiryBucketCaps(t *testing.T) {
 	if err := createFor(first, 22); err == nil {
 		t.Fatal("owner session cap was not enforced")
 	}
-	if got := db.GetState(registry.Address, registry.Slot("ownerCount", first, 0)).Big().Uint64(); got != registry.MaxOwnerSessions {
+	if got := db.GetState(
+		registry.Address, registry.Slot("ownerCount", first, 0),
+	).Big().Uint64(); got != registry.MaxOwnerSessions {
 		t.Fatalf("owner session count=%d, want %d", got, registry.MaxOwnerSessions)
 	}
 
@@ -210,10 +268,14 @@ func TestRegistrySessionKeysIndependentOwnerAndExpiryBucketCaps(t *testing.T) {
 			t.Fatalf("expiry bucket entry %d: %v", i, err)
 		}
 	}
-	if err := independentCreate(bucketDB, third, independentAddress(keyID+1), 10, 20, selector); err == nil {
+	if err := independentCreate(
+		bucketDB, third, independentAddress(keyID+1), 10, 20, selector,
+	); err == nil {
 		t.Fatal("expiry bucket cap was not enforced")
 	}
-	if got := bucketDB.GetState(registry.Address, registry.Slot("bucketCount", independentBucket(20), 0)).Big().Uint64(); got != registry.MaxBucketEntries {
+	if got := bucketDB.GetState(
+		registry.Address, registry.Slot("bucketCount", independentBucket(20), 0),
+	).Big().Uint64(); got != registry.MaxBucketEntries {
 		t.Fatalf("expiry bucket count=%d, want %d", got, registry.MaxBucketEntries)
 	}
 }
@@ -230,7 +292,12 @@ func TestRegistrySessionKeysIndependentRandomizedIndexLifecycle(t *testing.T) {
 	}
 	entries := make([]entry, 0, 60)
 	for i := 0; i < 60; i++ {
-		e := entry{owner: owners[rng.Intn(len(owners))], key: independentAddress(uint64(0x2000 + i)), expiry: uint64(20 + rng.Intn(5)), active: true}
+		e := entry{
+			owner:  owners[rng.Intn(len(owners))],
+			key:    independentAddress(uint64(0x2000 + i)),
+			expiry: uint64(20 + rng.Intn(5)),
+			active: true,
+		}
 		selector := [4]byte{0x70, byte(i >> 16), byte(i >> 8), byte(i)}
 		if err := independentCreate(db, e.owner, e.key, 10, e.expiry, selector); err != nil {
 			t.Fatalf("create randomized registry entry %d: %v", i, err)
@@ -254,11 +321,15 @@ func TestRegistrySessionKeysIndependentRandomizedIndexLifecycle(t *testing.T) {
 				t.Fatalf("%s: active key %s has no configuration", label, e.key)
 			}
 			ownerIndex := db.GetState(registry.Address, registry.Slot("ownerIndex", e.key, 0)).Big().Uint64()
-			if got := common.BytesToAddress(db.GetState(registry.Address, registry.Slot("ownerList", e.owner, ownerIndex)).Bytes()); got != e.key {
+			if got := common.BytesToAddress(
+				db.GetState(registry.Address, registry.Slot("ownerList", e.owner, ownerIndex)).Bytes(),
+			); got != e.key {
 				t.Fatalf("%s: owner index for %s points to %s", label, e.key, got)
 			}
 			bucketIndex := db.GetState(registry.Address, registry.Slot("bucketIndex", e.key, 0)).Big().Uint64()
-			if got := common.BytesToAddress(db.GetState(registry.Address, registry.Slot("bucketList", bucketAddr, bucketIndex)).Bytes()); got != e.key {
+			if got := common.BytesToAddress(
+				db.GetState(registry.Address, registry.Slot("bucketList", bucketAddr, bucketIndex)).Bytes(),
+			); got != e.key {
 				t.Fatalf("%s: bucket index for %s points to %s", label, e.key, got)
 			}
 		}
@@ -308,11 +379,19 @@ func TestRegistrySessionKeysIndependentBuiltinABIValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner, key, target := crypto.PubkeyToAddress(ownerKey.PublicKey), crypto.PubkeyToAddress(sessionKey.PublicKey), independentAddress(0x9000)
+	owner, key, target :=
+		crypto.PubkeyToAddress(ownerKey.PublicKey),
+		crypto.PubkeyToAddress(sessionKey.PublicKey),
+		independentAddress(0x9000)
 	selector := [4]byte{0x11, 0x22, 0x33, 0x44}
 	chainID := big.NewInt(1)
-	input := independentPackCreate(t, owner, sessionKey, key, target, [][4]byte{selector}, big.NewInt(20), big.NewInt(30), big.NewInt(110), chainID)
-	_, remaining, err := registry.Run(db, owner, input, registry.CreateGas+registry.SelectorGas, 100, false, chainID)
+	input := independentPackCreate(
+		t, owner, sessionKey, key, target, [][4]byte{selector},
+		big.NewInt(20), big.NewInt(30), big.NewInt(110), chainID,
+	)
+	_, remaining, err := registry.Run(
+		db, owner, input, registry.CreateGas+registry.SelectorGas, 100, false, chainID,
+	)
 	if err != nil || remaining != 0 {
 		t.Fatalf("owner creation via builtin: remaining=%d err=%v", remaining, err)
 	}
@@ -324,7 +403,9 @@ func TestRegistrySessionKeysIndependentBuiltinABIValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := registry.Run(db, independentAddress(0xa1), revoke, registry.RevokeGas, 100, false, chainID); err == nil {
+	if _, _, err := registry.Run(
+		db, independentAddress(0xa1), revoke, registry.RevokeGas, 100, false, chainID,
+	); err == nil {
 		t.Fatal("builtin allowed a non-owner to revoke a session")
 	}
 	if _, _, err := registry.Run(db, owner, revoke, registry.RevokeGas, 100, true, chainID); err == nil {
@@ -333,16 +414,79 @@ func TestRegistrySessionKeysIndependentBuiltinABIValidation(t *testing.T) {
 	if registry.Get(db, key) == nil {
 		t.Fatal("failed builtin calls changed session state")
 	}
-	if _, _, err := registry.Run(db, owner, input[:len(input)-1], registry.CreateGas+registry.SelectorGas, 100, false, chainID); err == nil {
+	if _, _, err := registry.Run(
+		db, owner, input[:len(input)-1], registry.CreateGas+registry.SelectorGas,
+		100, false, chainID,
+	); err == nil {
 		t.Fatal("builtin accepted non-canonical truncated ABI input")
 	}
-	if _, _, err := registry.Run(db, owner, input, registry.CreateGas+registry.SelectorGas-1, 100, false, chainID); err == nil {
+	if _, _, err := registry.Run(
+		db, owner, input, registry.CreateGas+registry.SelectorGas-1, 100, false, chainID,
+	); err == nil {
 		t.Fatal("builtin accepted insufficient gas")
 	}
 	if registry.Get(db, independentAddress(0xb1)) != nil {
 		t.Fatal("invalid builtin calls wrote a session")
 	}
 
+}
+
+func TestRegistrySessionKeysRejectsInvalidSigningDomainsIndependent(t *testing.T) {
+	db := independentRegistryState(t)
+	ownerKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := crypto.PubkeyToAddress(ownerKey.PublicKey)
+	key := crypto.PubkeyToAddress(sessionKey.PublicKey)
+	target := independentAddress(0x9000)
+	selectors := [][4]byte{{1, 2, 3, 4}}
+	aplo, gaplo, expiry := big.NewInt(20), big.NewInt(30), big.NewInt(110)
+	chainID := big.NewInt(1)
+	proof := independentSessionProof(
+		t, sessionKey, owner, key, target, selectors,
+		aplo, gaplo, expiry, chainID,
+	)
+	input, err := registry.ABI.Pack(
+		"CreateSessionKey", key, target, selectors, aplo, gaplo, expiry, proof,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	domains := []struct {
+		name string
+		id   *big.Int
+	}{
+		{name: "nil"},
+		{name: "negative", id: big.NewInt(-1)},
+		{name: "larger than uint256", id: new(big.Int).Lsh(big.NewInt(1), 256)},
+	}
+	for _, domain := range domains {
+		t.Run(domain.name, func(t *testing.T) {
+			before := db.Copy().IntermediateRoot(false)
+			if _, _, err := registry.Run(
+				db, owner, input, registry.CreateGas+registry.SelectorGas,
+				100, false, domain.id,
+			); err == nil {
+				t.Fatal("registry accepted an invalid signing domain")
+			}
+			if got := db.Copy().IntermediateRoot(false); got != before {
+				t.Fatalf("invalid signing domain mutated state: before=%s after=%s", before, got)
+			}
+			if registry.Used(db, key) || registry.Get(db, key) != nil {
+				t.Fatal("invalid signing domain reserved or registered the key")
+			}
+			if registry.VerifyProof(
+				owner, key, target, selectors, aplo, gaplo, expiry, domain.id, proof,
+			) {
+				t.Fatal("proof verification accepted an invalid signing domain")
+			}
+		})
+	}
 }
 
 func TestRegistrySessionKeysIndependentProofOfPossessionPreventsAddressSquatting(t *testing.T) {
@@ -366,7 +510,10 @@ func TestRegistrySessionKeysIndependentProofOfPossessionPreventsAddressSquatting
 	chainID := big.NewInt(1)
 	aplo, gaplo, expiry := big.NewInt(50), big.NewInt(70), big.NewInt(110)
 
-	baseProof := independentSessionProof(t, victimKey, owner, victim, target, selectors, aplo, gaplo, expiry, chainID)
+	baseProof := independentSessionProof(
+		t, victimKey, owner, victim, target, selectors, aplo, gaplo, expiry, chainID,
+	)
+	// Convert the valid low-s signature to its malleable high-s counterpart.
 	highS := append([]byte(nil), baseProof...)
 	order := crypto.S256().Params().N
 	highSValue := new(big.Int).Sub(order, new(big.Int).SetBytes(highS[32:64]))
@@ -393,33 +540,85 @@ func TestRegistrySessionKeysIndependentProofOfPossessionPreventsAddressSquatting
 		chainID   *big.Int
 		proof     []byte
 	}{
-		{name: "attacker cannot claim known victim key", caller: owner, key: victim, target: target, selectors: selectors, aplo: aplo, gaplo: gaplo, expiry: expiry, chainID: chainID, proof: forgedProof},
-		{name: "proof is bound to owner", caller: wrongOwner, key: victim, target: target, selectors: selectors, aplo: aplo, gaplo: gaplo, expiry: expiry, chainID: chainID, proof: baseProof},
-		{name: "proof is bound to chain id", caller: owner, key: victim, target: target, selectors: selectors, aplo: aplo, gaplo: gaplo, expiry: expiry, chainID: wrongChainID, proof: baseProof},
-		{name: "proof is bound to target", caller: owner, key: victim, target: independentAddress(0x9002), selectors: selectors, aplo: aplo, gaplo: gaplo, expiry: expiry, chainID: chainID, proof: baseProof},
-		{name: "proof is bound to selector list", caller: owner, key: victim, target: target, selectors: wrongSelector, aplo: aplo, gaplo: gaplo, expiry: expiry, chainID: chainID, proof: baseProof},
-		{name: "proof is bound to APLO budget", caller: owner, key: victim, target: target, selectors: selectors, aplo: big.NewInt(51), gaplo: gaplo, expiry: expiry, chainID: chainID, proof: baseProof},
-		{name: "proof is bound to GAplo budget", caller: owner, key: victim, target: target, selectors: selectors, aplo: aplo, gaplo: big.NewInt(71), expiry: expiry, chainID: chainID, proof: baseProof},
-		{name: "proof is bound to expiry", caller: owner, key: victim, target: target, selectors: selectors, aplo: aplo, gaplo: gaplo, expiry: big.NewInt(111), chainID: chainID, proof: baseProof},
-		{name: "empty proof is rejected", caller: owner, key: victim, target: target, selectors: selectors, aplo: aplo, gaplo: gaplo, expiry: expiry, chainID: chainID, proof: []byte{}},
-		{name: "high-s proof is noncanonical", caller: owner, key: victim, target: target, selectors: selectors, aplo: aplo, gaplo: gaplo, expiry: expiry, chainID: chainID, proof: highS},
-		{name: "truncated proof is rejected", caller: owner, key: victim, target: target, selectors: selectors, aplo: aplo, gaplo: gaplo, expiry: expiry, chainID: chainID, proof: baseProof[:64]},
+		{
+			name: "attacker cannot claim known victim key", caller: owner,
+			key: victim, target: target, selectors: selectors,
+			aplo: aplo, gaplo: gaplo, expiry: expiry, chainID: chainID, proof: forgedProof,
+		},
+		{
+			name: "proof is bound to owner", caller: wrongOwner,
+			key: victim, target: target, selectors: selectors,
+			aplo: aplo, gaplo: gaplo, expiry: expiry, chainID: chainID, proof: baseProof,
+		},
+		{
+			name: "proof is bound to chain id", caller: owner,
+			key: victim, target: target, selectors: selectors,
+			aplo: aplo, gaplo: gaplo, expiry: expiry, chainID: wrongChainID, proof: baseProof,
+		},
+		{
+			name: "proof is bound to target", caller: owner,
+			key: victim, target: independentAddress(0x9002), selectors: selectors,
+			aplo: aplo, gaplo: gaplo, expiry: expiry, chainID: chainID, proof: baseProof,
+		},
+		{
+			name: "proof is bound to selector list", caller: owner,
+			key: victim, target: target, selectors: wrongSelector,
+			aplo: aplo, gaplo: gaplo, expiry: expiry, chainID: chainID, proof: baseProof,
+		},
+		{
+			name: "proof is bound to APLO budget", caller: owner,
+			key: victim, target: target, selectors: selectors,
+			aplo: big.NewInt(51), gaplo: gaplo, expiry: expiry, chainID: chainID, proof: baseProof,
+		},
+		{
+			name: "proof is bound to GAplo budget", caller: owner,
+			key: victim, target: target, selectors: selectors,
+			aplo: aplo, gaplo: big.NewInt(71), expiry: expiry, chainID: chainID, proof: baseProof,
+		},
+		{
+			name: "proof is bound to expiry", caller: owner,
+			key: victim, target: target, selectors: selectors,
+			aplo: aplo, gaplo: gaplo, expiry: big.NewInt(111), chainID: chainID, proof: baseProof,
+		},
+		{
+			name: "empty proof is rejected", caller: owner,
+			key: victim, target: target, selectors: selectors,
+			aplo: aplo, gaplo: gaplo, expiry: expiry, chainID: chainID, proof: []byte{},
+		},
+		{
+			name: "high-s proof is noncanonical", caller: owner,
+			key: victim, target: target, selectors: selectors,
+			aplo: aplo, gaplo: gaplo, expiry: expiry, chainID: chainID, proof: highS,
+		},
+		{
+			name: "truncated proof is rejected", caller: owner,
+			key: victim, target: target, selectors: selectors,
+			aplo: aplo, gaplo: gaplo, expiry: expiry, chainID: chainID, proof: baseProof[:64],
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			db := independentRegistryState(t)
-			input, err := registry.ABI.Pack("CreateSessionKey", test.key, test.target, test.selectors, test.aplo, test.gaplo, test.expiry, test.proof)
+			input, err := registry.ABI.Pack(
+				"CreateSessionKey", test.key, test.target, test.selectors,
+				test.aplo, test.gaplo, test.expiry, test.proof,
+			)
 			if err != nil {
 				t.Fatal(err)
 			}
 			before := db.Copy().IntermediateRoot(false)
-			if _, _, err := registry.Run(db, test.caller, input, registry.CreateGas+registry.SelectorGas, 100, false, test.chainID); err == nil {
+			if _, _, err := registry.Run(
+				db, test.caller, input, registry.CreateGas+registry.SelectorGas,
+				100, false, test.chainID,
+			); err == nil {
 				t.Fatal("creation with absent or mismatched key-possession proof succeeded")
 			}
 			if after := db.Copy().IntermediateRoot(false); after != before {
 				t.Fatalf("rejected proof changed state root: before=%s after=%s", before, after)
 			}
-			if registry.Get(db, victim) != nil || registry.Used(db, victim) || registry.Recipient(db, victim) != victim {
+			if registry.Get(db, victim) != nil ||
+				registry.Used(db, victim) ||
+				registry.Recipient(db, victim) != victim {
 				t.Fatal("rejected proof registered or redirected a known victim address")
 			}
 		})
@@ -428,8 +627,12 @@ func TestRegistrySessionKeysIndependentProofOfPossessionPreventsAddressSquatting
 	// The actual session private key can claim its own address and enable the
 	// redirect; a proof from any other key cannot squat on it.
 	db := independentRegistryState(t)
-	input := independentPackCreate(t, owner, victimKey, victim, target, selectors, aplo, gaplo, expiry, chainID)
-	if _, _, err := registry.Run(db, owner, input, registry.CreateGas+registry.SelectorGas, 100, false, chainID); err != nil {
+	input := independentPackCreate(
+		t, owner, victimKey, victim, target, selectors, aplo, gaplo, expiry, chainID,
+	)
+	if _, _, err := registry.Run(
+		db, owner, input, registry.CreateGas+registry.SelectorGas, 100, false, chainID,
+	); err != nil {
 		t.Fatalf("legitimate key-possession proof rejected: %v", err)
 	}
 	if got := registry.Recipient(db, victim); got != owner {
@@ -457,10 +660,15 @@ func TestRegistrySessionKeysIndependentPublicSelectorCapBoundary(t *testing.T) {
 				selectors[i] = [4]byte{0x42, byte(i >> 16), byte(i >> 8), byte(i)}
 			}
 			aplo, gaplo, expiry := big.NewInt(50), big.NewInt(70), big.NewInt(110)
-			input := independentPackCreate(t, owner, sessionKey, key, target, selectors, aplo, gaplo, expiry, chainID)
+			input := independentPackCreate(
+				t, owner, sessionKey, key, target, selectors, aplo, gaplo, expiry, chainID,
+			)
 			db := independentRegistryState(t)
 			before := db.Copy().IntermediateRoot(false)
-			_, _, err = registry.Run(db, owner, input, registry.CreateGas+registry.SelectorGas*uint64(count), 100, false, chainID)
+			_, _, err = registry.Run(
+				db, owner, input, registry.CreateGas+registry.SelectorGas*uint64(count),
+				100, false, chainID,
+			)
 			if count <= registry.MaxSelectors {
 				if err != nil {
 					t.Fatalf("maximum selector count rejected: %v", err)
@@ -484,7 +692,11 @@ func TestRegistrySessionKeysIndependentPublicSelectorCapBoundary(t *testing.T) {
 }
 
 func FuzzSessionKeysRunCanonicalABIIndependent(f *testing.F) {
-	create, _ := registry.ABI.Pack("CreateSessionKey", independentAddress(0xb0), independentAddress(0x9000), [][4]byte{{1, 2, 3, 4}}, big.NewInt(50), big.NewInt(70), big.NewInt(101), []byte{})
+	create, _ := registry.ABI.Pack(
+		"CreateSessionKey", independentAddress(0xb0), independentAddress(0x9000),
+		[][4]byte{{1, 2, 3, 4}}, big.NewInt(50), big.NewInt(70),
+		big.NewInt(101), []byte{},
+	)
 	get, _ := registry.ABI.Pack("getSession", independentAddress(0xb0))
 	revoke, _ := registry.ABI.Pack("RevokeSessionKey", independentAddress(0xb0))
 	f.Add([]byte{})
@@ -495,13 +707,10 @@ func FuzzSessionKeysRunCanonicalABIIndependent(f *testing.F) {
 	f.Add(revoke)
 	f.Fuzz(func(t *testing.T, input []byte) {
 		db := independentRegistryState(t)
-		configCopy := *params.TestChainConfig
-		configCopy.SessionKeysBlock = big.NewInt(0)
-		if err := registry.Activate(db, &configCopy, big.NewInt(1)); err != nil {
-			t.Fatalf("activate registry: %v", err)
-		}
 		before := db.Copy().IntermediateRoot(false)
-		_, _, err := registry.Run(db, independentAddress(0xa0), input, 2_000_000, 1, false)
+		_, _, err := registry.Run(
+			db, independentAddress(0xa0), input, 2_000_000, 1, false, big.NewInt(1),
+		)
 		if err != nil {
 			after := db.Copy().IntermediateRoot(false)
 			if after != before {

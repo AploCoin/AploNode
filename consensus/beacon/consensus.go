@@ -351,17 +351,13 @@ func (beacon *Beacon) Finalize(chain consensus.ChainHeaderReader, header *types.
 		beacon.ethone.Finalize(chain, header, state, txs, uncles)
 		return
 	}
-	if err := sessionkeys.Activate(state, chain.Config(), header.Number); err != nil {
+	if err := sessionkeys.ValidateState(state); err != nil {
 		return
 	}
-	state.SetSessionKeysEnabled(chain.Config().IsSessionKeys(header.Number))
-	if chain.Config().IsSessionKeys(header.Number) {
-		sessionkeys.Cleanup(state, header.Number.Uint64())
-	}
+	// PoS expiry cleanup also precedes the EthPoW-support early return below.
+	sessionkeys.Cleanup(state, header.Number.Uint64())
 	if chain.Config().EthPoWForkSupport {
-		if chain.Config().IsSessionKeys(header.Number) {
-			header.Root = state.IntermediateRoot(true)
-		}
+		header.Root = state.IntermediateRoot(true)
 		return
 	}
 	// The block reward is no longer handled here. It's done by the
@@ -372,7 +368,7 @@ func (beacon *Beacon) Finalize(chain consensus.ChainHeaderReader, header *types.
 // FinalizeAndAssemble implements consensus.Engine, setting the final state and
 // assembling the block.
 func (beacon *Beacon) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, txs []*types.Transaction, uncles []*types.Header, receipts []*types.Receipt) (*types.Block, error) {
-	if err := sessionkeys.Activate(state, chain.Config(), header.Number); err != nil {
+	if err := sessionkeys.ValidateState(state); err != nil {
 		return nil, err
 	}
 

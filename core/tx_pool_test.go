@@ -2560,6 +2560,7 @@ func BenchmarkPoolMultiAccountBatchInsert(b *testing.B) {
 	}
 }
 
+// GetBlockByNumber implements the builtin Blockchain interface for pool tests.
 func (bc *testBlockChain) GetBlockByNumber(number uint64) *types.Block {
 	return bc.GetBlock(common.Hash{}, number)
 }

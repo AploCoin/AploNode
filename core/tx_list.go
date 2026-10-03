@@ -339,7 +339,8 @@ func (l *txList) Filter(aploBalance *big.Int, gaploBalance *big.Int, gasLimit ui
 
 	// Filter out all the transactions above the account's funds
 	removed := l.txs.Filter(func(tx *types.Transaction) bool {
-		return tx.Gas() > gasLimit || tx.Value().Cmp(aploBalance) > 0 || new(big.Int).Mul(new(big.Int).SetUint64(tx.Gas()), tx.GasFeeCap()).Cmp(gaploBalance) > 0
+		return tx.Gas() > gasLimit || tx.Value().Cmp(aploBalance) > 0 ||
+			new(big.Int).Mul(new(big.Int).SetUint64(tx.Gas()), tx.GasFeeCap()).Cmp(gaploBalance) > 0
 	})
 
 	if len(removed) == 0 {
@@ -354,7 +355,9 @@ func (l *txList) Filter(aploBalance *big.Int, gaploBalance *big.Int, gasLimit ui
 				lowest = nonce
 			}
 		}
-		invalids = l.txs.filter(func(tx *types.Transaction) bool { return tx.Nonce() > lowest })
+		invalids = l.txs.filter(func(tx *types.Transaction) bool {
+			return tx.Nonce() > lowest
+		})
 	}
 	l.txs.reheap()
 	return removed, invalids
@@ -637,7 +640,9 @@ func (l *txPricedList) SetBaseFee(baseFee *big.Int) {
 // FilterSession removes transactions whose delegation policy was revoked or
 // changed by a head update, preserving strict nonce dependencies.
 func (l *txList) FilterSession(valid func(*types.Transaction) bool) (types.Transactions, types.Transactions) {
-	removed := l.txs.Filter(func(tx *types.Transaction) bool { return !valid(tx) })
+	removed := l.txs.Filter(func(tx *types.Transaction) bool {
+		return !valid(tx)
+	})
 	var invalids types.Transactions
 	if l.strict && len(removed) > 0 {
 		lowest := uint64(math.MaxUint64)
@@ -646,7 +651,9 @@ func (l *txList) FilterSession(valid func(*types.Transaction) bool) (types.Trans
 				lowest = tx.Nonce()
 			}
 		}
-		invalids = l.txs.filter(func(tx *types.Transaction) bool { return tx.Nonce() > lowest })
+		invalids = l.txs.filter(func(tx *types.Transaction) bool {
+			return tx.Nonce() > lowest
+		})
 		l.txs.reheap()
 	}
 	return removed, invalids

@@ -27,16 +27,25 @@ func TestSessionKeysInsertChainReorgAndRestart(t *testing.T) {
 	owner, session := crypto.PubkeyToAddress(ownerKey.PublicKey), crypto.PubkeyToAddress(key.PublicKey)
 	target := common.HexToAddress("0x9090")
 	config := *params.TestChainConfig
-	config.SessionKeysBlock = big.NewInt(1)
 	config.LondonBlock, config.ArrowGlacierBlock, config.GrayGlacierBlock = nil, nil, nil
-	genesisSpec := &Genesis{Config: &config, GasLimit: 8_000_000, Difficulty: big.NewInt(131072), Timestamp: 1, Alloc: GenesisAlloc{
-		owner: {Balance: big.NewInt(1000)},
-		params.GAploContractAddress: {Balance: new(big.Int), Code: common.FromHex(params.GAPLO), Storage: map[common.Hash]common.Hash{
-			sessionkeys.GaploSlot(owner): common.BigToHash(big.NewInt(1_000_000_000)),
-			common.HexToHash("0x2"):      common.BigToHash(big.NewInt(1_000_000_000)),
-		}},
-		target: {Balance: new(big.Int), Code: independentCallerOriginCode()},
-	}}
+	genesisSpec := &Genesis{
+		Config:     &config,
+		GasLimit:   8_000_000,
+		Difficulty: big.NewInt(131072),
+		Timestamp:  1,
+		Alloc: GenesisAlloc{
+			owner: {Balance: big.NewInt(1000)},
+			params.GAploContractAddress: {
+				Balance: new(big.Int),
+				Code:    common.FromHex(params.GAPLO),
+				Storage: map[common.Hash]common.Hash{
+					sessionkeys.GaploSlot(owner): common.BigToHash(big.NewInt(1_000_000_000)),
+					common.HexToHash("0x2"):      common.BigToHash(big.NewInt(1_000_000_000)),
+				},
+			},
+			target: {Balance: new(big.Int), Code: independentCallerOriginCode()},
+		},
+	}
 	genDB, chainDB := rawdb.NewMemoryDatabase(), rawdb.NewMemoryDatabase()
 	genesis := genesisSpec.MustCommit(genDB)
 	genesisSpec.MustCommit(chainDB)
@@ -53,25 +62,39 @@ func TestSessionKeysInsertChainReorgAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	create, err := sessionkeys.ABI.Pack("CreateSessionKey", session, target, selectors, aplo, gas, expiry, proof)
+	create, err := sessionkeys.ABI.Pack(
+		"CreateSessionKey", session, target, selectors, aplo, gas, expiry, proof,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	revoke, _ := sessionkeys.ABI.Pack("RevokeSessionKey", session)
 	ownerSigner := types.LatestSigner(&config)
-	register, err := types.SignTx(types.NewTransaction(0, sessionkeys.Address, new(big.Int), 700_000, big.NewInt(1), create), ownerSigner, ownerKey)
+	register, err := types.SignTx(
+		types.NewTransaction(0, sessionkeys.Address, new(big.Int), 700_000, big.NewInt(1), create),
+		ownerSigner, ownerKey,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	revokeTx, err := types.SignTx(types.NewTransaction(1, sessionkeys.Address, new(big.Int), 400_000, big.NewInt(1), revoke), ownerSigner, ownerKey)
+	revokeTx, err := types.SignTx(
+		types.NewTransaction(1, sessionkeys.Address, new(big.Int), 400_000, big.NewInt(1), revoke),
+		ownerSigner, ownerKey,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	use, err := types.SignTx(types.NewTransaction(0, target, big.NewInt(11), 120_000, big.NewInt(1), independentSessionSelector[:]), ownerSigner, key)
+	use, err := types.SignTx(
+		types.NewTransaction(0, target, big.NewInt(11), 120_000, big.NewInt(1), independentSessionSelector[:]),
+		ownerSigner, key,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	useAgain, err := types.SignTx(types.NewTransaction(1, target, big.NewInt(7), 120_000, big.NewInt(1), independentSessionSelector[:]), ownerSigner, key)
+	useAgain, err := types.SignTx(
+		types.NewTransaction(1, target, big.NewInt(7), 120_000, big.NewInt(1), independentSessionSelector[:]),
+		ownerSigner, key,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +136,11 @@ func TestSessionKeysInsertChainReorgAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sessionkeys.Get(stateB, session) != nil || !sessionkeys.Used(stateB, session) || stateB.GetNonce(session) != 0 || stateB.GetBalance(target).Sign() != 0 || stateB.GetBalance(owner).Cmp(big.NewInt(1000)) != 0 {
+	if sessionkeys.Get(stateB, session) != nil ||
+		!sessionkeys.Used(stateB, session) ||
+		stateB.GetNonce(session) != 0 ||
+		stateB.GetBalance(target).Sign() != 0 ||
+		stateB.GetBalance(owner).Cmp(big.NewInt(1000)) != 0 {
 		t.Fatal("reorg retained branch A session use or lost revocation tombstone")
 	}
 	extensionA, _ := GenerateChain(&config, branchA[1], engine, genDB, 2, func(i int, b *BlockGen) {
@@ -134,7 +161,13 @@ func TestSessionKeysInsertChainReorgAndRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 		s := sessionkeys.Get(st, session)
-		if s == nil || s.Nonce != 2 || s.AploSpent.Cmp(big.NewInt(82)) != 0 || s.GAploSpent.Cmp(feeA) >= 0 || st.GetNonce(owner) != 1 || st.GetBalance(owner).Cmp(big.NewInt(982)) != 0 || st.GetBalance(target).Cmp(big.NewInt(18)) != 0 {
+		if s == nil ||
+			s.Nonce != 2 ||
+			s.AploSpent.Cmp(big.NewInt(82)) != 0 ||
+			s.GAploSpent.Cmp(feeA) >= 0 ||
+			st.GetNonce(owner) != 1 ||
+			st.GetBalance(owner).Cmp(big.NewInt(982)) != 0 ||
+			st.GetBalance(target).Cmp(big.NewInt(18)) != 0 {
 			t.Fatalf("reorg/restart did not restore correct nonce, budgets, balances: %+v", s)
 		}
 	}

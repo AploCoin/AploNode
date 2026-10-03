@@ -1030,10 +1030,8 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 		log.Error("Failed to create sealing context", "err", err)
 		return nil, err
 	}
-	if err := sessionkeys.CheckForkBoundary(env.state, w.chainConfig, header.Number); err != nil {
-		return nil, err
-	}
-	if err := sessionkeys.Activate(env.state, w.chainConfig, header.Number); err != nil {
+	// Require native genesis accounts even when sealing an empty block.
+	if err := sessionkeys.ValidateState(env.state); err != nil {
 		return nil, err
 	}
 	// Accumulate the uncles for the sealing work only if it's allowed.

@@ -13,15 +13,23 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 )
 
+// A signed owner may call proxy code, but only the top-level registry caller is
+// authorized; nested call contexts cannot borrow tx.origin's authority.
 func TestSessionKeysRegistryCannotAuthorizeThroughOriginOrContext(t *testing.T) {
 	for _, opcode := range []byte{0xf1, 0xf2, 0xf4, 0xfa} {
 		t.Run(common.Bytes2Hex([]byte{opcode}), func(t *testing.T) {
 			f := newIndependentSessionFixture(t, []byte{0}, 100, big.NewInt(100), big.NewInt(1000000))
 			freshKey, _ := crypto.GenerateKey()
 			fresh := crypto.PubkeyToAddress(freshKey.PublicKey)
-			hash := sessionkeys.ProofHash(f.owner, fresh, f.target, [][4]byte{independentSessionSelector}, big.NewInt(10), big.NewInt(100000), big.NewInt(100), f.config.ChainID)
+			hash := sessionkeys.ProofHash(
+				f.owner, fresh, f.target, [][4]byte{independentSessionSelector},
+				big.NewInt(10), big.NewInt(100000), big.NewInt(100), f.config.ChainID,
+			)
 			proof, _ := crypto.Sign(hash[:], freshKey)
-			input, err := sessionkeys.ABI.Pack("CreateSessionKey", fresh, f.target, [][4]byte{independentSessionSelector}, big.NewInt(10), big.NewInt(100000), big.NewInt(100), proof)
+			input, err := sessionkeys.ABI.Pack(
+				"CreateSessionKey", fresh, f.target, [][4]byte{independentSessionSelector},
+				big.NewInt(10), big.NewInt(100000), big.NewInt(100), proof,
+			)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -40,7 +48,10 @@ func TestSessionKeysRegistryCannotAuthorizeThroughOriginOrContext(t *testing.T) 
 			proxySigner := crypto.PubkeyToAddress(proxyKey.PublicKey)
 			var selector [4]byte
 			copy(selector[:], input[:4])
-			if err := sessionkeys.Create(f.db, f.owner, proxySigner, f.target, [][4]byte{selector}, big.NewInt(100), big.NewInt(1000000), 100, 1); err != nil {
+			if err := sessionkeys.Create(
+				f.db, f.owner, proxySigner, f.target, [][4]byte{selector},
+				big.NewInt(100), big.NewInt(1000000), 100, 1,
+			); err != nil {
 				t.Fatal(err)
 			}
 			tx := f.signedTx(t, proxyKey, 0, f.target, new(big.Int), 250000, input)
@@ -54,39 +65,67 @@ func TestSessionKeysRegistryCannotAuthorizeThroughOriginOrContext(t *testing.T) 
 		})
 	}
 }
-func TestSessionKeysActivationDustAndGenesisConflicts(t *testing.T) {
-	config := *params.TestChainConfig
-	config.SessionKeysBlock = big.NewInt(2)
-	for _, existing := range []struct{ balance, nonce int64 }{{0, 0}, {1, 0}, {1, 7}} {
-		db, _ := state.New(common.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()), nil)
-		db.SetCode(params.GAploContractAddress, common.FromHex(params.GAPLO))
-		if existing.balance > 0 {
-			db.SetBalance(sessionkeys.Address, big.NewInt(existing.balance))
-		}
-		if existing.nonce > 0 {
-			db.SetNonce(sessionkeys.Address, uint64(existing.nonce))
-		}
-		if err := sessionkeys.CheckForkBoundary(db, &config, big.NewInt(2)); err != nil {
-			t.Fatal(err)
-		}
-		if err := sessionkeys.Activate(db, &config, big.NewInt(2)); err != nil {
-			t.Fatal(err)
-		}
-		if db.GetBalance(sessionkeys.Address).Cmp(big.NewInt(existing.balance)) != 0 {
-			t.Fatal("activation lost native dust")
-		}
-		if existing.balance > 0 && db.GetNonce(sessionkeys.Address) != uint64(existing.nonce) {
-			t.Fatal("activation reset existing EOA nonce")
-		}
-		if db.Empty(sessionkeys.Address) {
-			t.Fatal("registry vulnerable to EIP161 deletion")
-		}
+
+func TestSessionKeysNativeStateValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*state.StateDB)
+		wantValid bool
+	}{
+		{
+			name: "reserved registry permits balance dust",
+			configure: func(db *state.StateDB) {
+				db.SetNonce(sessionkeys.Address, 1)
+				db.SetBalance(sessionkeys.Address, big.NewInt(7))
+			},
+			wantValid: true,
+		},
+		{
+			name: "legacy registry without reserved nonce",
+			configure: func(db *state.StateDB) {
+				db.SetNonce(sessionkeys.Address, 0)
+			},
+		},
+		{
+			name: "registry code conflict",
+			configure: func(db *state.StateDB) {
+				db.SetNonce(sessionkeys.Address, 1)
+				db.SetCode(sessionkeys.Address, []byte{0x00})
+			},
+		},
+		{
+			name: "registered state storage",
+			configure: func(db *state.StateDB) {
+				db.SetNonce(sessionkeys.Address, 1)
+				db.SetState(sessionkeys.Address, common.Hash{}, common.BigToHash(big.NewInt(1)))
+			},
+			wantValid: true,
+		},
+		{
+			name: "noncanonical GAplo runtime",
+			configure: func(db *state.StateDB) {
+				db.SetNonce(sessionkeys.Address, 1)
+				db.SetCode(params.GAploContractAddress, []byte{0x00})
+			},
+		},
 	}
-	config.SessionKeysBlock = big.NewInt(0)
-	for _, alloc := range []GenesisAccount{{Code: []byte{0}}, {Storage: map[common.Hash]common.Hash{sessionkeys.Slot("initialized", sessionkeys.Address, 0): common.BigToHash(big.NewInt(1))}}} {
-		g := &Genesis{Config: &config, Alloc: GenesisAlloc{params.GAploContractAddress: {Code: common.FromHex(params.GAPLO)}, sessionkeys.Address: alloc}}
-		if _, err := g.Commit(rawdb.NewMemoryDatabase()); err == nil {
-			t.Fatal("genesis imported conflicting registry")
-		}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db, err := state.New(common.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			db.SetCode(params.GAploContractAddress, common.FromHex(params.GAPLO))
+			db.SetNonce(sessionkeys.Address, 1)
+			test.configure(db)
+			before := db.Copy().IntermediateRoot(false)
+			err = sessionkeys.ValidateState(db)
+			if (err == nil) != test.wantValid {
+				t.Fatalf("ValidateState error=%v, want valid=%t", err, test.wantValid)
+			}
+			if after := db.Copy().IntermediateRoot(false); after != before {
+				t.Fatalf("state validation mutated state: before=%s after=%s", before, after)
+			}
+		})
 	}
 }

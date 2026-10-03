@@ -19,6 +19,8 @@ package core
 import (
 	"errors"
 	"fmt"
+	"math/big"
+
 	"github.com/ethereum/go-ethereum/builtin/sessionkeys"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
@@ -28,7 +30,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
-	"math/big"
 )
 
 // StateProcessor is a basic Processor, which takes care of transitioning
@@ -67,10 +68,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		allLogs     []*types.Log
 		gp          = new(GasPool).AddGas(block.GasLimit())
 	)
-	if err := sessionkeys.CheckForkBoundary(statedb, p.config, blockNumber); err != nil {
-		return nil, nil, 0, err
-	}
-	if err := sessionkeys.Activate(statedb, p.config, blockNumber); err != nil {
+	if err := sessionkeys.ValidateState(statedb); err != nil {
 		return nil, nil, 0, err
 	}
 	// Mutate the block and state according to any hard-fork specs
@@ -99,8 +97,11 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	return receipts, allLogs, *usedGas, nil
 }
 
+// applyTransaction executes one signed transaction and constructs its receipt.
+// Session calls and direct registry calls require replay-protected signatures.
 func applyTransaction(msg types.Message, config *params.ChainConfig, author *common.Address, gp *GasPool, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas *uint64, evm *vm.EVM) (*types.Receipt, error) {
-	if config.IsSessionKeys(blockNumber) && (sessionkeys.Used(statedb, msg.From()) || (tx.To() != nil && *tx.To() == sessionkeys.Address)) && !tx.Protected() {
+	if (sessionkeys.Used(statedb, msg.From()) || (tx.To() != nil && *tx.To() == sessionkeys.Address)) &&
+		!tx.Protected() {
 		return nil, sessionkeys.ErrInvalid
 	}
 	// check eip155 sign after EthPow block

@@ -69,6 +69,42 @@ type Genesis struct {
 // GenesisAlloc specifies the initial state that is part of the genesis block.
 type GenesisAlloc map[common.Address]GenesisAccount
 
+// nativeProtocolAlloc returns an allocation with Aplo's permanent protocol
+// accounts prepared. It does not mutate the supplied map or its storage maps.
+func (ga GenesisAlloc) nativeProtocolAlloc() (GenesisAlloc, error) {
+	alloc := make(GenesisAlloc, len(ga)+2)
+	for addr, account := range ga {
+		if account.Balance == nil {
+			account.Balance = new(big.Int)
+		}
+		alloc[addr] = account
+	}
+	registry := alloc[sessionkeys.Address]
+	if len(registry.Code) != 0 || len(registry.Storage) != 0 || registry.Nonce > 1 {
+		return nil, errors.New("native Aplo genesis requires an empty reserved session registry")
+	}
+	registry.Nonce = 1
+	if registry.Balance == nil {
+		registry.Balance = new(big.Int)
+	}
+	alloc[sessionkeys.Address] = registry
+	gaplo := alloc[params.GAploContractAddress]
+	canonical := common.FromHex(params.GAPLO)
+	if len(gaplo.Code) == 0 {
+		if len(gaplo.Storage) != 0 {
+			return nil, errors.New("native Aplo genesis GAplo storage requires its canonical runtime")
+		}
+		gaplo.Code = canonical
+	} else if !bytes.Equal(gaplo.Code, canonical) {
+		return nil, errors.New("native Aplo genesis requires canonical GAplo runtime")
+	}
+	if gaplo.Balance == nil {
+		gaplo.Balance = new(big.Int)
+	}
+	alloc[params.GAploContractAddress] = gaplo
+	return alloc, nil
+}
+
 func (ga *GenesisAlloc) UnmarshalJSON(data []byte) error {
 	m := make(map[common.UnprefixedAddress]GenesisAccount)
 	if err := json.Unmarshal(data, &m); err != nil {
@@ -83,6 +119,10 @@ func (ga *GenesisAlloc) UnmarshalJSON(data []byte) error {
 
 // deriveHash computes the state root according to the genesis specification.
 func (ga *GenesisAlloc) deriveHash() (common.Hash, error) {
+	alloc, err := ga.nativeProtocolAlloc()
+	if err != nil {
+		return common.Hash{}, err
+	}
 	// Create an ephemeral in-memory database for computing hash,
 	// all the derived states will be discarded to not pollute disk.
 	db := state.NewDatabase(rawdb.NewMemoryDatabase())
@@ -90,7 +130,7 @@ func (ga *GenesisAlloc) deriveHash() (common.Hash, error) {
 	if err != nil {
 		return common.Hash{}, err
 	}
-	for addr, account := range *ga {
+	for addr, account := range alloc {
 		statedb.AddBalance(addr, account.Balance)
 		statedb.SetCode(addr, account.Code)
 		statedb.SetNonce(addr, account.Nonce)
@@ -105,11 +145,15 @@ func (ga *GenesisAlloc) deriveHash() (common.Hash, error) {
 // all the generated states will be persisted into the given database.
 // Also, the genesis state specification will be flushed as well.
 func (ga *GenesisAlloc) flush(db ethdb.Database) error {
+	alloc, err := ga.nativeProtocolAlloc()
+	if err != nil {
+		return err
+	}
 	statedb, err := state.New(common.Hash{}, state.NewDatabaseWithConfig(db, &trie.Config{Preimages: true}), nil)
 	if err != nil {
 		return err
 	}
-	for addr, account := range *ga {
+	for addr, account := range alloc {
 		statedb.AddBalance(addr, account.Balance)
 		statedb.SetCode(addr, account.Code)
 		statedb.SetNonce(addr, account.Nonce)
@@ -126,7 +170,7 @@ func (ga *GenesisAlloc) flush(db ethdb.Database) error {
 		return err
 	}
 	// Marshal the genesis state specification and persist.
-	blob, err := json.Marshal(ga)
+	blob, err := json.Marshal(alloc)
 	if err != nil {
 		return err
 	}
@@ -137,8 +181,12 @@ func (ga *GenesisAlloc) flush(db ethdb.Database) error {
 // CommitGenesisState loads the stored genesis state with the given block
 // hash and commits them into the given database handler.
 func CommitGenesisState(db ethdb.Database, hash common.Hash) error {
+	header := rawdb.ReadHeader(db, hash, 0)
+	if header == nil {
+		return errors.New("genesis header not found")
+	}
 	var alloc GenesisAlloc
-	blob := rawdb.ReadGenesisStateSpec(db, hash)
+	blob := rawdb.ReadGenesisStateSpec(db, header.Root)
 	if len(blob) != 0 {
 		if err := alloc.UnmarshalJSON(blob); err != nil {
 			return err
@@ -149,16 +197,28 @@ func CommitGenesisState(db ethdb.Database, hash common.Hash) error {
 		// the persisted allocation is just lost.
 		// - supported networks(mainnet, testnets), recover with defined allocations
 		// - private network, can't recover
-		var genesis *Genesis
-		switch hash {
-		case params.AploGenesisHash:
-			genesis = DefaultGenesisBlock()
-		}
-		if genesis != nil {
-			alloc = genesis.Alloc
-		} else {
+		genesis := DefaultGenesisBlock()
+		if hash != genesis.ToBlock().Hash() {
 			return errors.New("not found")
 		}
+		var err error
+		alloc, err = genesis.Alloc.nativeProtocolAlloc()
+		if err != nil {
+			return err
+		}
+	}
+	// Recovery must never normalize an old specification into a different chain.
+	registry := alloc[sessionkeys.Address]
+	if registry.Nonce != 1 || len(registry.Code) != 0 || len(registry.Storage) != 0 ||
+		!bytes.Equal(alloc[params.GAploContractAddress].Code, common.FromHex(params.GAPLO)) {
+		return errors.New("incompatible native Aplo genesis specification; recreate the devnet in a fresh data directory")
+	}
+	root, err := alloc.deriveHash()
+	if err != nil {
+		return err
+	}
+	if root != header.Root {
+		return errors.New("persisted genesis allocation does not match the genesis state root")
 	}
 	return alloc.flush(db)
 }
@@ -243,7 +303,7 @@ func SetupGenesisBlock(db ethdb.Database, genesis *Genesis) (*params.ChainConfig
 
 func SetupGenesisBlockWithOverride(db ethdb.Database, genesis *Genesis, overrideTerminalTotalDifficulty *big.Int, overrideTerminalTotalDifficultyPassed *bool) (*params.ChainConfig, common.Hash, error) {
 	if genesis != nil {
-		if err := genesis.validateSessionKeys(); err != nil {
+		if err := genesis.validateNativeProtocol(); err != nil {
 			return genesis.Config, common.Hash{}, err
 		}
 	}
@@ -281,7 +341,8 @@ func SetupGenesisBlockWithOverride(db ethdb.Database, genesis *Genesis, override
 	// We have the genesis block in database(perhaps in ancient database)
 	// but the corresponding state is missing.
 	header := rawdb.ReadHeader(db, stored, 0)
-	if _, err := state.New(header.Root, state.NewDatabaseWithConfig(db, nil), nil); err != nil {
+	genesisState, err := state.New(header.Root, state.NewDatabaseWithConfig(db, nil), nil)
+	if err != nil {
 		if genesis == nil {
 			genesis = DefaultGenesisBlock()
 		}
@@ -296,6 +357,21 @@ func SetupGenesisBlockWithOverride(db ethdb.Database, genesis *Genesis, override
 		}
 		applyOverrides(genesis.Config)
 		return genesis.Config, block.Hash(), nil
+	}
+	// An old devnet is deliberately incompatible. Never migrate its state as a
+	// side effect of startup; the operator must initialize a fresh data directory.
+	if err := sessionkeys.ValidateState(genesisState); err != nil {
+		return genesis.configOrDefault(stored), stored, fmt.Errorf("incompatible native Aplo genesis; recreate the devnet in a fresh data directory: %w", err)
+	}
+	var registryStorage bool
+	if err := genesisState.ForEachStorage(sessionkeys.Address, func(_, value common.Hash) bool {
+		registryStorage = value != (common.Hash{})
+		return !registryStorage
+	}); err != nil {
+		return genesis.configOrDefault(stored), stored, err
+	}
+	if registryStorage {
+		return genesis.configOrDefault(stored), stored, errors.New("native Aplo genesis session registry storage must be empty")
 	}
 	// Check whether the genesis block is already written.
 	if genesis != nil {
@@ -325,6 +401,9 @@ func SetupGenesisBlockWithOverride(db ethdb.Database, genesis *Genesis, override
 		newcfg = storedcfg
 		applyOverrides(newcfg)
 	}
+	if err := (&Genesis{Config: newcfg}).validateNativeProtocol(); err != nil {
+		return newcfg, stored, err
+	}
 	// Check config compatibility and write the config. Compatibility errors
 	// are returned to the caller unless we're already at block zero.
 	height := rawdb.ReadHeaderNumber(db, rawdb.ReadHeadHeaderHash(db))
@@ -332,7 +411,7 @@ func SetupGenesisBlockWithOverride(db ethdb.Database, genesis *Genesis, override
 		return newcfg, stored, fmt.Errorf("missing block number for head header hash")
 	}
 	compatErr := storedcfg.CheckCompatible(newcfg, *height)
-	if compatErr != nil && *height != 0 && compatErr.RewindTo != 0 {
+	if compatErr != nil && *height != 0 {
 		return newcfg, stored, compatErr
 	}
 	rawdb.WriteChainConfig(db, stored, newcfg)
@@ -352,6 +431,9 @@ func (g *Genesis) configOrDefault(ghash common.Hash) *params.ChainConfig {
 
 // ToBlock returns the genesis block according to genesis specification.
 func (g *Genesis) ToBlock() *types.Block {
+	if err := g.validateNativeProtocol(); err != nil {
+		panic(err)
+	}
 	root, err := g.Alloc.deriveHash()
 	if err != nil {
 		panic(err)
@@ -389,7 +471,7 @@ func (g *Genesis) ToBlock() *types.Block {
 // Commit writes the block and state of a genesis specification to the database.
 // The block is committed as the canonical head block.
 func (g *Genesis) Commit(db ethdb.Database) (*types.Block, error) {
-	if err := g.validateSessionKeys(); err != nil {
+	if err := g.validateNativeProtocol(); err != nil {
 		return nil, err
 	}
 	block := g.ToBlock()
@@ -557,6 +639,13 @@ func DefaultKilnGenesisBlock() *Genesis {
 
 // DeveloperGenesisBlock returns the 'geth --dev' genesis block.
 func DeveloperGenesisBlock(period uint64, gasLimit uint64, faucet common.Address) *Genesis {
+	faucetNumber := new(big.Int).SetBytes(faucet.Bytes())
+	if faucet == (common.Address{}) || faucet == sessionkeys.Address ||
+		faucet == params.GAploContractAddress || faucet == params.AploContractAddress ||
+		faucet == params.BlockOracleContractAddress ||
+		(faucetNumber.IsUint64() && faucetNumber.Uint64() <= 9) {
+		panic("developer faucet must be an ordinary EOA address")
+	}
 	// Override the default period to the user requested one
 	config := *params.AllCliqueProtocolChanges
 	config.Clique = &params.CliqueConfig{
@@ -564,7 +653,10 @@ func DeveloperGenesisBlock(period uint64, gasLimit uint64, faucet common.Address
 		Epoch:  config.Clique.Epoch,
 	}
 
-	// Assemble and return the genesis with the precompiles and faucet pre-funded
+	// Fund native APLO and GAplo separately so the first protected transaction can
+	// pay fees without a setup transaction or lazy protocol-state initialization.
+	supply := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(9))
+	// Assemble and return the genesis with the precompiles and faucet pre-funded.
 	return &Genesis{
 		Config:     &config,
 		ExtraData:  append(append(make([]byte, 32), faucet[:]...), make([]byte, crypto.SignatureLength)...),
@@ -581,7 +673,16 @@ func DeveloperGenesisBlock(period uint64, gasLimit uint64, faucet common.Address
 			common.BytesToAddress([]byte{7}): {Balance: big.NewInt(1)}, // ECScalarMul
 			common.BytesToAddress([]byte{8}): {Balance: big.NewInt(1)}, // ECPairing
 			common.BytesToAddress([]byte{9}): {Balance: big.NewInt(1)}, // BLAKE2b
-			faucet:                           {Balance: new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(9))},
+			faucet:                           {Balance: new(big.Int).Set(supply)},
+			params.GAploContractAddress: {
+				Code:    common.FromHex(params.GAPLO),
+				Balance: new(big.Int),
+				Storage: map[common.Hash]common.Hash{
+					sessionkeys.GaploSlot(faucet):   common.BigToHash(supply),
+					common.BigToHash(big.NewInt(2)): common.BigToHash(supply),
+				},
+			},
+			sessionkeys.Address: {Nonce: 1, Balance: new(big.Int)},
 		},
 	}
 }
@@ -598,16 +699,20 @@ func decodePrealloc(data string) GenesisAlloc {
 	return ga
 }
 
-func (g *Genesis) validateSessionKeys() error {
-	if g.Config == nil || !g.Config.IsSessionKeys(common.Big0) {
-		return nil
+// validateNativeProtocol rejects conflicting genesis predeploys without changing
+// caller-owned allocations. Both root derivation and persistence normalize them.
+func (g *Genesis) validateNativeProtocol() error {
+	config := g.Config
+	if config == nil {
+		config = params.AllEthashProtocolChanges
 	}
-	registry := g.Alloc[sessionkeys.Address]
-	if len(registry.Code) != 0 || len(registry.Storage) != 0 {
-		return errors.New("session keys genesis registry code/storage must be empty")
+	if config.ChainID == nil || config.ChainID.Sign() < 0 || config.ChainID.BitLen() > 256 ||
+		(config.EthPoWForkBlock != nil && (config.ChainID_ALT == nil || config.ChainID_ALT.Sign() < 0 || config.ChainID_ALT.BitLen() > 256)) {
+		return errors.New("native Aplo genesis requires uint256 chain ID signing domains")
 	}
-	if crypto.Keccak256Hash(g.Alloc[params.GAploContractAddress].Code) != crypto.Keccak256Hash(common.FromHex(params.GAPLO)) {
-		return errors.New("session keys genesis requires canonical GAplo")
+	if config.EIP155Block == nil || config.EIP155Block.Sign() != 0 {
+		return errors.New("native Aplo genesis requires EIP155 at block zero")
 	}
-	return nil
+	_, err := g.Alloc.nativeProtocolAlloc()
+	return err
 }

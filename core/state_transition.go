@@ -55,8 +55,8 @@ The state transitioning model does all the necessary work to work out a valid ne
 6) Derive new state root
 */
 type StateTransition struct {
-	session    *sessionkeys.Session
-	payer      common.Address
+	session    *sessionkeys.Session // Active signer delegation, if any.
+	payer      common.Address       // Owner for sessions; otherwise the transaction sender.
 	gp         *GasPool
 	msg        Message
 	gas        uint64
@@ -187,21 +187,20 @@ func NewStateTransition(evm *vm.EVM, msg Message, gp *GasPool) *StateTransition 
 // indicates a core error meaning that the message would always fail for that particular
 // state and would never be accepted within a block.
 func ApplyMessage(evm *vm.EVM, msg Message, gp *GasPool) (*ExecutionResult, error) {
-	if evm.ChainConfig().IsSessionKeys(evm.Context.BlockNumber) {
-		rules := evm.ChainConfig().Rules(evm.Context.BlockNumber, evm.Context.Random != nil)
-		if rules.IsBerlin {
-			evm.StateDB.PrepareAccessList(msg.From(), msg.To(), vm.ActivePrecompiles(rules), msg.AccessList())
-		}
-		snapshot := evm.StateDB.Snapshot()
-		gasBefore := gp.Gas()
-		result, err := NewStateTransition(evm, msg, gp).TransitionDb()
-		if err != nil {
-			evm.StateDB.RevertToSnapshot(snapshot)
-			*gp = GasPool(gasBefore)
-		}
-		return result, err
+	rules := evm.ChainConfig().Rules(evm.Context.BlockNumber, evm.Context.Random != nil)
+	if rules.IsBerlin {
+		evm.StateDB.PrepareAccessList(msg.From(), msg.To(), vm.ActivePrecompiles(rules), msg.AccessList())
 	}
-	return NewStateTransition(evm, msg, gp).TransitionDb()
+	// PrepareAccessList resets journaled warmth, so it must precede this
+	// snapshot and any fee-contract execution that may need to be reverted.
+	snapshot := evm.StateDB.Snapshot()
+	gasBefore := gp.Gas()
+	result, err := NewStateTransition(evm, msg, gp).TransitionDb()
+	if err != nil {
+		evm.StateDB.RevertToSnapshot(snapshot)
+		*gp = GasPool(gasBefore)
+	}
+	return result, err
 }
 
 // to returns the recipient of the message.
@@ -211,9 +210,11 @@ func (st *StateTransition) to() common.Address {
 	}
 	return *st.msg.To()
 }
+
+// addGaplo refunds GAplo through the root-only canonical credit method.
 func (st *StateTransition) addGaplo(address common.Address, amount *big.Int) ([]byte, error) {
 	// A zero beneficiary burns its tip; canonical GAplo forbids mint-to-zero.
-	if st.evm.ChainConfig().IsSessionKeys(st.evm.Context.BlockNumber) && (amount.Sign() == 0 || address == (common.Address{})) {
+	if amount.Sign() == 0 || address == (common.Address{}) {
 		return nil, nil
 	}
 	transferInput := crypto.Keccak256([]byte("refund(address,uint256)"))[0:4]
@@ -231,6 +232,8 @@ func (st *StateTransition) addGaplo(address common.Address, amount *big.Int) ([]
 	)
 	return rev, err
 }
+
+// subGaplo debits GAplo transaction fees from the selected payer.
 func (st *StateTransition) subGaplo(address common.Address, amount *big.Int) error {
 	transferInput := crypto.Keccak256([]byte("takeFee(uint256)"))[0:4]
 	paddedAmount := common.LeftPadBytes(amount.Bytes(), 32)
@@ -246,6 +249,8 @@ func (st *StateTransition) subGaplo(address common.Address, amount *big.Int) err
 	return err
 }
 
+// buyGas validates the maximum fee reservation and purchases gas at the
+// effective price. Session value and GAplo fees use separate funding balances.
 func (st *StateTransition) buyGas() error {
 	// Call GAplo balanceOf
 	gaploInput := crypto.Keccak256([]byte("balanceOf(address)"))[0:4]
@@ -271,9 +276,6 @@ func (st *StateTransition) buyGas() error {
 	if st.gasFeeCap != nil {
 		balanceCheck = new(big.Int).SetUint64(st.msg.Gas())
 		balanceCheck = balanceCheck.Mul(balanceCheck, st.gasFeeCap)
-		if !st.evm.ChainConfig().IsSessionKeys(st.evm.Context.BlockNumber) {
-			balanceCheck.Add(balanceCheck, st.value)
-		}
 	}
 	if have, want := balance, balanceCheck; have.Cmp(want) < 0 {
 		return fmt.Errorf("%w: address %v have %v want %v", ErrInsufficientFunds, st.msg.From().Hex(), have, want)
@@ -283,7 +285,7 @@ func (st *StateTransition) buyGas() error {
 	}
 
 	// Transfer GAplo tokens to 0 for gas payment
-	if err := st.subGaplo(st.payer, mgval); err != nil && st.evm.ChainConfig().IsSessionKeys(st.evm.Context.BlockNumber) {
+	if err := st.subGaplo(st.payer, mgval); err != nil {
 		return err
 	}
 
@@ -294,41 +296,41 @@ func (st *StateTransition) buyGas() error {
 	return nil
 }
 
+// preCheck validates delegation, signer nonce and funds before gas purchase.
+// A session changes origin and funding only; its signer and nonce lane remain intact.
 func (st *StateTransition) preCheck() error {
-	if st.evm.ChainConfig().IsSessionKeys(st.evm.Context.BlockNumber) {
-		if err := sessionkeys.Activate(st.state, st.evm.ChainConfig(), st.evm.Context.BlockNumber); err != nil {
-			return err
-		}
-		st.session = sessionkeys.Get(st.state, st.msg.From())
-		if sessionkeys.Used(st.state, st.msg.From()) {
-			fee := new(big.Int).Mul(new(big.Int).SetUint64(st.msg.Gas()), st.msg.GasFeeCap())
-			totalValue := sessionkeys.NativeSpend(st.msg.To(), st.msg.Data(), st.msg.Value())
-			if st.session != nil && st.state.GetBalance(st.session.Owner).Cmp(totalValue) < 0 {
-				return ErrInsufficientFundsForTransfer
-			}
-			if err := sessionkeys.Validate(st.session, st.evm.Context.BlockNumber.Uint64(), st.msg.To(), st.msg.Data(), totalValue, fee); err != nil {
-				return err
-			}
-			if !sessionkeys.CanonicalGaplo(st.state) {
-				return sessionkeys.ErrInvalid
-			}
-			st.payer = st.session.Owner
-			st.evm.Origin = st.payer
-			signer := st.msg.From()
-			st.evm.SessionSender = &signer
-			st.evm.SessionValuePayer = &st.payer
-		}
-		rules := st.evm.ChainConfig().Rules(st.evm.Context.BlockNumber, st.evm.Context.Random != nil)
-		intrinsic, err := IntrinsicGas(st.msg.Data(), st.msg.AccessList(), st.msg.To() == nil, rules.IsHomestead, rules.IsIstanbul)
-		if err != nil {
-			return err
-		}
-		if st.msg.Gas() < intrinsic {
-			return ErrIntrinsicGas
-		}
-		if st.state.GetBalance(st.payer).Cmp(st.msg.Value()) < 0 {
+	if err := sessionkeys.ValidateState(st.state); err != nil {
+		return err
+	}
+	st.session = sessionkeys.Get(st.state, st.msg.From())
+	if sessionkeys.Used(st.state, st.msg.From()) {
+		fee := new(big.Int).Mul(new(big.Int).SetUint64(st.msg.Gas()), st.msg.GasFeeCap())
+		totalValue := sessionkeys.NativeSpend(st.msg.To(), st.msg.Data(), st.msg.Value())
+		if st.session != nil && st.state.GetBalance(st.session.Owner).Cmp(totalValue) < 0 {
 			return ErrInsufficientFundsForTransfer
 		}
+		if err := sessionkeys.Validate(st.session, st.evm.Context.BlockNumber.Uint64(), st.msg.To(), st.msg.Data(), totalValue, fee); err != nil {
+			return err
+		}
+		if !sessionkeys.CanonicalGaplo(st.state) {
+			return sessionkeys.ErrInvalid
+		}
+		st.payer = st.session.Owner
+		st.evm.Origin = st.payer
+		signer := st.msg.From()
+		st.evm.SessionSender = &signer
+		st.evm.SessionValuePayer = &st.payer
+	}
+	rules := st.evm.ChainConfig().Rules(st.evm.Context.BlockNumber, st.evm.Context.Random != nil)
+	intrinsic, err := IntrinsicGas(st.msg.Data(), st.msg.AccessList(), st.msg.To() == nil, rules.IsHomestead, rules.IsIstanbul)
+	if err != nil {
+		return err
+	}
+	if st.msg.Gas() < intrinsic {
+		return ErrIntrinsicGas
+	}
+	if st.state.GetBalance(st.payer).Cmp(st.msg.Value()) < 0 {
+		return ErrInsufficientFundsForTransfer
 	}
 
 	// Only check transactions that are not fake
@@ -437,10 +439,6 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 		return nil, fmt.Errorf("%w: address %v", ErrInsufficientFundsForTransfer, msg.From().Hex())
 	}
 
-	// Set up the initial access list.
-	if rules.IsBerlin && !st.evm.ChainConfig().IsSessionKeys(st.evm.Context.BlockNumber) {
-		st.state.PrepareAccessList(msg.From(), msg.To(), vm.ActivePrecompiles(rules), msg.AccessList())
-	}
 	var (
 		ret   []byte
 		vmerr error // vm errors do not effect consensus and are therefore not assigned to err
@@ -477,12 +475,9 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	} else {
 		fee := new(big.Int).SetUint64(st.gasUsed())
 		fee.Mul(fee, effectiveTip)
-		rev, err := st.addGaplo(st.evm.Context.Coinbase, fee)
+		_, err := st.addGaplo(st.evm.Context.Coinbase, fee)
 		if err != nil {
-			if st.evm.ChainConfig().IsSessionKeys(st.evm.Context.BlockNumber) {
-				return nil, err
-			}
-			log.Error("Tip error", "amount", fee, "err", rev, "err_name", err)
+			return nil, err
 		}
 		// add pow fork check & change state root after ethw fork.
 		// thx twitter @z_j_s ^_^ reported it
@@ -542,9 +537,8 @@ func (st *StateTransition) refundGas(refundQuotient uint64, vmerr error) error {
 						gaploReward.Mul(gaploReward, big.NewInt(mult))
 						gaploReward.Div(gaploReward, big.NewInt(10))
 						beneficiary := st.evm.Context.Coinbase
-						if st.evm.ChainConfig().IsSessionKeys(st.evm.Context.BlockNumber) {
-							beneficiary = sessionkeys.Recipient(st.state, beneficiary)
-						}
+						beneficiary = sessionkeys.Recipient(st.state, beneficiary)
+
 						if beneficiary != st.payer {
 							gaploReward.Add(gaploReward, gaploUsed)
 						}
@@ -556,7 +550,7 @@ func (st *StateTransition) refundGas(refundQuotient uint64, vmerr error) error {
 	} else {
 		log.Error("refund Gas error", "error", vmerr.Error())
 	}
-	if _, err := st.addGaplo(st.payer, remaining); err != nil && st.evm.ChainConfig().IsSessionKeys(st.evm.Context.BlockNumber) {
+	if _, err := st.addGaplo(st.payer, remaining); err != nil {
 		return err
 	}
 

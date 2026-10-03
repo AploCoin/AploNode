@@ -651,22 +651,20 @@ func (ethash *Ethash) Prepare(chain consensus.ChainHeaderReader, header *types.H
 // Finalize implements consensus.Engine, accumulating the block and uncle rewards,
 // setting the final state on the header
 func (ethash *Ethash) Finalize(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, txs []*types.Transaction, uncles []*types.Header) {
+	// Enable owner routing before reward credits, then expire the inclusive bucket.
 	// Accumulate any block and uncle rewards and commit the final state root
-	if err := sessionkeys.Activate(state, chain.Config(), header.Number); err != nil {
+	if err := sessionkeys.ValidateState(state); err != nil {
 		return
 	}
-	state.SetSessionKeysEnabled(chain.Config().IsSessionKeys(header.Number))
 	accumulateRewards(chain.Config(), state, header, uncles)
-	if chain.Config().IsSessionKeys(header.Number) {
-		sessionkeys.Cleanup(state, header.Number.Uint64())
-	}
+	sessionkeys.Cleanup(state, header.Number.Uint64())
 	header.Root = state.IntermediateRoot(chain.Config().IsEIP158(header.Number))
 }
 
 // FinalizeAndAssemble implements consensus.Engine, accumulating the block and
 // uncle rewards, setting the final state and assembling the block.
 func (ethash *Ethash) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, txs []*types.Transaction, uncles []*types.Header, receipts []*types.Receipt) (*types.Block, error) {
-	if err := sessionkeys.Activate(state, chain.Config(), header.Number); err != nil {
+	if err := sessionkeys.ValidateState(state); err != nil {
 		return nil, err
 	}
 

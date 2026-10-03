@@ -1,5 +1,5 @@
-// This local example generates an ephemeral key, signs registration and one
-// session call, and prints raw transactions. It never transmits private keys.
+// Command sessionkeys builds an isolated development genesis or signs session
+// registration and a call offline. It prints raw transactions, never private keys.
 package main
 
 import (
@@ -19,6 +19,7 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 )
 
+// main selects local genesis generation or offline session transaction signing.
 func main() {
 	genesis := flag.String("genesis", "", "write a local dev genesis instead of signing")
 	ownerAddress := flag.String("owner", "", "genesis funded owner address")
@@ -29,6 +30,9 @@ func main() {
 	inputHex := flag.String("input", "0x01020304", "exact session call calldata")
 	chainID := flag.Int64("chain-id", 424242, "local chain signing domain")
 	flag.Parse()
+	if *chainID < 0 {
+		panic("chain-id must be nonnegative")
+	}
 	if *genesis != "" {
 		if !common.IsHexAddress(*ownerAddress) {
 			panic("-owner address required")
@@ -36,6 +40,7 @@ func main() {
 		writeGenesis(*genesis, common.HexToAddress(*ownerAddress), common.HexToAddress(*targetHex), *chainID)
 		return
 	}
+
 	ownerKey, err := crypto.HexToECDSA(strings.TrimPrefix(os.Getenv("APLO_OWNER_KEY"), "0x"))
 	if err != nil {
 		panic("set APLO_OWNER_KEY locally to your development owner key")
@@ -53,20 +58,36 @@ func main() {
 	var selector [4]byte
 	copy(selector[:], input[:4])
 	target := common.HexToAddress(*targetHex)
+
 	// Budgets and prices are dev units, not production fee advice.
 	aplo := big.NewInt(1000000)
 	gaplo := big.NewInt(10000000)
 	price := big.NewInt(1)
-	proofHash := sessionkeys.ProofHash(crypto.PubkeyToAddress(ownerKey.PublicKey), address, target, [][4]byte{selector}, aplo, gaplo, new(big.Int).SetUint64(*expiry), big.NewInt(*chainID))
+	proofHash := sessionkeys.ProofHash(
+		crypto.PubkeyToAddress(ownerKey.PublicKey), address, target, [][4]byte{selector},
+		aplo, gaplo, new(big.Int).SetUint64(*expiry), big.NewInt(*chainID),
+	)
 	proof, err := crypto.Sign(proofHash[:], key)
 	must(err)
-	create, err := sessionkeys.ABI.Pack("CreateSessionKey", address, target, [][4]byte{selector}, aplo, gaplo, new(big.Int).SetUint64(*expiry), proof)
+	create, err := sessionkeys.ABI.Pack(
+		"CreateSessionKey", address, target, [][4]byte{selector},
+		aplo, gaplo, new(big.Int).SetUint64(*expiry), proof,
+	)
 	must(err)
+
+	// Both transactions use the same protected chain domain as the acceptance proof.
 	signer := types.NewEIP155Signer(big.NewInt(*chainID))
-	registration, err := types.SignTx(types.NewTransaction(*nonce, sessionkeys.Address, new(big.Int), 1500000, price, create), signer, ownerKey)
+	registration, err := types.SignTx(
+		types.NewTransaction(*nonce, sessionkeys.Address, new(big.Int), 1500000, price, create),
+		signer, ownerKey,
+	)
 	must(err)
-	sessionCall, err := types.SignTx(types.NewTransaction(0, target, big.NewInt(7), 100000, price, input), signer, key)
+	sessionCall, err := types.SignTx(
+		types.NewTransaction(0, target, big.NewInt(7), 100000, price, input),
+		signer, key,
+	)
 	must(err)
+
 	rawCreate, err := registration.MarshalBinary()
 	must(err)
 	rawCall, err := sessionCall.MarshalBinary()
@@ -77,28 +98,53 @@ func main() {
 	// The private session key stays only in this process. Persist securely in a
 	// client keystore if more calls will be signed later; never log it.
 }
+
+// must terminates this local example when construction or signing fails.
 func must(err error) {
 	if err != nil {
 		panic(err)
 	}
 }
+
+// writeGenesis writes an isolated native Aplo genesis with canonical GAplo,
+// funded owner balances and a target returning ORIGIN and CALLER.
 func writeGenesis(path string, owner, target common.Address, id int64) {
+	ownerNumber := new(big.Int).SetBytes(owner.Bytes())
+	if owner == sessionkeys.Address || owner == params.GAploContractAddress ||
+		owner == params.AploContractAddress || owner == params.BlockOracleContractAddress ||
+		(ownerNumber.IsUint64() && ownerNumber.Uint64() <= 9) {
+		panic("owner must be an ordinary EOA address")
+	}
 	config := *params.AllEthashProtocolChanges
 	config.ChainID = big.NewInt(id)
 	config.ChainID_ALT = big.NewInt(id)
-	config.SessionKeysBlock = big.NewInt(0)
 	config.LondonBlock = nil
 	config.ArrowGlacierBlock = nil
 	config.GrayGlacierBlock = nil
 	supply := new(big.Int).Exp(big.NewInt(10), big.NewInt(24), nil)
-	g := core.Genesis{Config: &config, GasLimit: 30000000, Difficulty: big.NewInt(1), Alloc: core.GenesisAlloc{
-		owner:                             {Balance: new(big.Int).Set(supply)},
-		params.GAploContractAddress:       {Code: common.FromHex(params.GAPLO), Balance: new(big.Int), Storage: map[common.Hash]common.Hash{sessionkeys.GaploSlot(owner): common.BigToHash(supply), common.BigToHash(big.NewInt(2)): common.BigToHash(supply)}},
-		params.AploContractAddress:        {Code: []byte{0}, Balance: new(big.Int)},
-		params.BlockOracleContractAddress: {Code: []byte{0}, Balance: new(big.Int)},
-		target:                            {Code: common.FromHex("326000523360205260406000f3"), Balance: new(big.Int)},
-	}}
-	if target == owner || target == sessionkeys.Address || target == params.GAploContractAddress || target == params.AploContractAddress || target == params.BlockOracleContractAddress {
+	g := core.Genesis{
+		Config:     &config,
+		GasLimit:   30000000,
+		Difficulty: big.NewInt(1),
+		Alloc: core.GenesisAlloc{
+			sessionkeys.Address: {Nonce: 1, Balance: new(big.Int)},
+			owner:               {Balance: new(big.Int).Set(supply)},
+			params.GAploContractAddress: {
+				Code:    common.FromHex(params.GAPLO),
+				Balance: new(big.Int),
+				Storage: map[common.Hash]common.Hash{
+					sessionkeys.GaploSlot(owner):    common.BigToHash(supply),
+					common.BigToHash(big.NewInt(2)): common.BigToHash(supply),
+				},
+			},
+			params.AploContractAddress:        {Code: []byte{0}, Balance: new(big.Int)},
+			params.BlockOracleContractAddress: {Code: []byte{0}, Balance: new(big.Int)},
+			target:                            {Code: common.FromHex("326000523360205260406000f3"), Balance: new(big.Int)},
+		},
+	}
+	if target == owner || target == sessionkeys.Address ||
+		target == params.GAploContractAddress || target == params.AploContractAddress ||
+		target == params.BlockOracleContractAddress {
 		panic("target address conflicts with owner/protocol")
 	}
 	must(config.CheckConfigForkOrder())

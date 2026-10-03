@@ -157,6 +157,8 @@ var fnGetMultiplier types.Function = func(_ types.Blockchain, state types.StateD
 
 // ─── state-mutating functions ─────────────────────────────────────────────────
 
+// fnTransfer implements transfer(address,uint256) for native APLO.
+// Session transfers debit the owner and charge the separate native allowance.
 var fnTransfer types.Function = func(_ types.Blockchain, state types.StateDB, from types.ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
 	if len(input) != 68 || gas < 25000 {
 		return nil, gas / 2, errors.New("execution reverted")
@@ -167,16 +169,13 @@ var fnTransfer types.Function = func(_ types.Blockchain, state types.StateDB, fr
 	amountInt := new(big.Int).SetBytes(amount)
 
 	payer := from.Address()
-	var session *sessionkeys.Session
-	if cfg, ok := state.(interface{ SessionKeysEnabled() bool }); ok && cfg.SessionKeysEnabled() {
-		toAddr = sessionkeys.Recipient(state, toAddr)
-		to = common.LeftPadBytes(toAddr.Bytes(), 32)
-		session = sessionkeys.Get(state, from.Address())
-		if session != nil {
-			payer = session.Owner
-			if session.AploSpent.Cmp(amountInt) < 0 {
-				return nil, gas / 2, errors.New("execution reverted")
-			}
+	toAddr = sessionkeys.Recipient(state, toAddr)
+	to = common.LeftPadBytes(toAddr.Bytes(), 32)
+	session := sessionkeys.Get(state, from.Address())
+	if session != nil {
+		payer = session.Owner
+		if session.AploSpent.Cmp(amountInt) < 0 {
+			return nil, gas / 2, errors.New("execution reverted")
 		}
 	}
 	if state.GetBalance(payer).Cmp(amountInt) < 0 {

@@ -102,7 +102,9 @@ type TxContext struct {
 type EVM struct {
 	// SessionValuePayer applies solely to the authorized top-level CALL.
 	SessionValuePayer *common.Address
-	SessionSender     *common.Address
+	// SessionSender identifies the signer eligible for that top-level funding override.
+	SessionSender *common.Address
+
 	// Context provides auxiliary blockchain related information
 	Context BlockContext
 	TxContext
@@ -145,9 +147,6 @@ func NewEVM(blockCtx BlockContext, txCtx TxContext, statedb types.StateDB, chain
 		chainRules:  chainConfig.Rules(blockCtx.BlockNumber, blockCtx.Random != nil),
 		blockchain:  blockchain,
 	}
-	if db, ok := statedb.(interface{ SetSessionKeysEnabled(bool) }); ok {
-		db.SetSessionKeysEnabled(chainConfig.IsSessionKeys(blockCtx.BlockNumber))
-	}
 	evm.interpreter = NewEVMInterpreter(evm, config)
 	return evm
 }
@@ -157,9 +156,6 @@ func NewEVM(blockCtx BlockContext, txCtx TxContext, statedb types.StateDB, chain
 func (evm *EVM) Reset(txCtx TxContext, statedb types.StateDB) {
 	evm.SessionValuePayer = nil
 	evm.SessionSender = nil
-	if db, ok := statedb.(interface{ SetSessionKeysEnabled(bool) }); ok {
-		db.SetSessionKeysEnabled(evm.chainConfig.IsSessionKeys(evm.Context.BlockNumber))
-	}
 	evm.TxContext = txCtx
 	evm.StateDB = statedb
 }
@@ -216,7 +212,6 @@ func (evm *EVM) Call(caller types.ContractRef, addr common.Address, input []byte
 	snapshot := evm.StateDB.Snapshot()
 	p, isPrecompile := evm.precompile(addr)
 	_, isBuiltin := builtin.BuiltInContracts[addr]
-	isBuiltin = isBuiltin && evm.chainConfig.IsSessionKeys(evm.Context.BlockNumber)
 
 	if !evm.StateDB.Exist(addr) {
 		if !isPrecompile && !isBuiltin && !evm.isSessionRegistry(addr) && evm.chainRules.IsEIP158 && value.Sign() == 0 {
@@ -256,7 +251,10 @@ func (evm *EVM) Call(caller types.ContractRef, addr common.Address, input []byte
 		readOnly := evm.interpreter.readOnly
 		// Mutations require the immediate signed EOA caller, never tx.origin alone.
 		isView := len(input) >= 4 && bytes.Equal(input[:4], sessionkeys.ABI.Methods["getSession"].ID)
-		if value.Sign() != 0 || (!readOnly && !isView && (evm.depth != 0 || caller.Address() != evm.Origin || sessionkeys.Used(evm.StateDB, caller.Address()) || evm.StateDB.GetCodeSize(caller.Address()) != 0)) {
+		if value.Sign() != 0 || (!readOnly && !isView &&
+			(evm.depth != 0 || caller.Address() != evm.Origin ||
+				sessionkeys.Used(evm.StateDB, caller.Address()) ||
+				evm.StateDB.GetCodeSize(caller.Address()) != 0)) {
 			err = ErrExecutionReverted
 		} else {
 			ret, gas, err = sessionkeys.Run(evm.StateDB, caller.Address(), input, gas, evm.Context.BlockNumber.Uint64(), readOnly, evm.sessionChainID())
@@ -280,7 +278,7 @@ func (evm *EVM) Call(caller types.ContractRef, addr common.Address, input []byte
 			addrCopy := addr
 			contract := NewContract(caller, types.AccountRef(addrCopy), value, gas)
 			contract.SetCallCode(&addrCopy, evm.StateDB.GetCodeHash(addrCopy), code)
-			if evm.chainConfig.IsSessionKeys(evm.Context.BlockNumber) && addr == params.GAploContractAddress && sessionkeys.CanonicalGaplo(evm.StateDB) {
+			if addr == params.GAploContractAddress && sessionkeys.CanonicalGaplo(evm.StateDB) {
 				input = evm.sessionGaploInput(input)
 			}
 			ret, err = evm.interpreter.Run(contract, input, false)
@@ -499,7 +497,7 @@ func (evm *EVM) create(caller types.ContractRef, codeAndHash *codeAndHash, gas u
 	}
 	// Ensure there's no existing contract already at the designated address
 	_, ok := builtin.BuiltInContracts[address]
-	if evm.chainConfig.IsSessionKeys(evm.Context.BlockNumber) && (sessionkeys.Used(evm.StateDB, address) || address == sessionkeys.Address) {
+	if sessionkeys.Used(evm.StateDB, address) || address == sessionkeys.Address {
 		ok = true
 	}
 	if ok {
@@ -596,12 +594,13 @@ func (evm *EVM) Create2(caller types.ContractRef, code []byte, gas uint64, endow
 // ChainConfig returns the environment's chain configuration
 func (evm *EVM) ChainConfig() *params.ChainConfig { return evm.chainConfig }
 
+// isSessionRegistry recognizes the native reserved session registry.
 func (evm *EVM) isSessionRegistry(addr common.Address) bool {
-	return addr == sessionkeys.Address && evm.chainConfig.IsSessionKeys(evm.Context.BlockNumber)
+	return addr == sessionkeys.Address
 }
 
-// Canonical GAplo exposes only these address-taking credit paths. This fork
-// redirects recipient ABI words before execution while preserving contract state.
+// sessionGaploInput redirects recipient ABI words for supported canonical
+// GAplo credit paths. It copies changed input and preserves the storage layout.
 func (evm *EVM) sessionGaploInput(input []byte) []byte {
 	if len(input) < 4 {
 		return input
@@ -618,6 +617,13 @@ func (evm *EVM) sessionGaploInput(input []byte) []byte {
 	if offset < 0 {
 		return input
 	}
+	// Keep malformed address words unchanged so canonical Solidity ABI decoding
+	// rejects them. Recipient routing must not turn invalid calldata into a call.
+	for _, padding := range input[offset : offset+12] {
+		if padding != 0 {
+			return input
+		}
+	}
 	a := common.BytesToAddress(input[offset : offset+32])
 	to := sessionkeys.Recipient(evm.StateDB, a)
 	if a == to {
@@ -628,13 +634,12 @@ func (evm *EVM) sessionGaploInput(input []byte) []byte {
 	return out
 }
 
+// sessionChainID selects the chain ID for session-key acceptance signatures.
+// The existing EthPoW fork switches the domain to ChainID_ALT.
 func (evm *EVM) sessionChainID() *big.Int {
 	id := evm.chainConfig.ChainID
 	if evm.chainConfig.IsEthPoWFork(evm.Context.BlockNumber) {
 		id = evm.chainConfig.ChainID_ALT
-	}
-	if id == nil {
-		return new(big.Int)
 	}
 	return id
 }

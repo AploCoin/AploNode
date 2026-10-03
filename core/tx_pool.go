@@ -633,27 +633,27 @@ func (pool *TxPool) validateTx(tx *types.Transaction, local bool) error {
 	if pool.currentState.GetNonce(from) > tx.Nonce() {
 		return ErrNonceTooLow
 	}
-	if pool.sessionKeysActive() && tx.To() != nil && *tx.To() == sessionkeys.Address && !tx.Protected() {
+	if tx.To() != nil && *tx.To() == sessionkeys.Address && !tx.Protected() {
 		return sessionkeys.ErrInvalid
 	}
 	payer := from
-	if pool.sessionKeysActive() && sessionkeys.Used(pool.currentState, from) {
+	if sessionkeys.Used(pool.currentState, from) {
 		session := sessionkeys.Get(pool.currentState, from)
 		fee := new(big.Int).Mul(tx.GasFeeCap(), new(big.Int).SetUint64(tx.Gas()))
 		if !tx.Protected() || tx.Nonce() == math.MaxUint64 || !sessionkeys.CanonicalGaplo(pool.currentState) {
 			return sessionkeys.ErrInvalid
 		}
-		if err := sessionkeys.Validate(session, pool.chain.CurrentBlock().NumberU64()+1, tx.To(), tx.Data(), sessionkeys.NativeSpend(tx.To(), tx.Data(), tx.Value()), fee); err != nil {
+		if err := sessionkeys.Validate(
+			session, pool.chain.CurrentBlock().NumberU64()+1, tx.To(), tx.Data(),
+			sessionkeys.NativeSpend(tx.To(), tx.Data(), tx.Value()), fee,
+		); err != nil {
 			return err
 		}
 		payer = session.Owner
 	}
 	// Transactor should have enough funds to cover the costs
 	// cost == V + GP * GL
-	spend := tx.Value()
-	if pool.sessionKeysActive() {
-		spend = sessionkeys.NativeSpend(tx.To(), tx.Data(), tx.Value())
-	}
+	spend := sessionkeys.NativeSpend(tx.To(), tx.Data(), tx.Value())
 	if pool.currentState.GetBalance(payer).Cmp(spend) < 0 {
 		log.Warn("TX pool", "gaplo", "bruh")
 		return ErrInsufficientFunds
@@ -1896,6 +1896,8 @@ func numSlots(tx *types.Transaction) int {
 	return int((tx.Size() + txSlotSize - 1) / txSlotSize)
 }
 
+// GetGaploBalance queries canonical GAplo on a state copy, without mutating the
+// pool's current state during admission or head-change revalidation.
 func GetGaploBalance(pool *TxPool, state *state.StateDB, address *common.Address, gasPrice *big.Int, globalGasCap uint64) (*big.Int, error) {
 	defer func(start time.Time) { log.Debug("Executing EVM call finished", "runtime", time.Since(start)) }(time.Now())
 
@@ -1943,14 +1945,10 @@ func GetGaploBalance(pool *TxPool, state *state.StateDB, address *common.Address
 	return balance, nil
 }
 
-func (pool *TxPool) sessionKeysActive() bool {
-	if pool.chainconfig.SessionKeysBlock == nil {
-		return false
-	}
-	return pool.chainconfig.IsSessionKeys(new(big.Int).Add(pool.chain.CurrentBlock().Number(), big.NewInt(1)))
-}
+// sessionPoolBalances caps owner funds by the signer's remaining session allowances.
+// A nil GAplo result keeps the ordinary-signer balance-query path unchanged.
 func (pool *TxPool) sessionPoolBalances(addr common.Address) (*big.Int, *big.Int) {
-	if !pool.sessionKeysActive() || !sessionkeys.Used(pool.currentState, addr) {
+	if !sessionkeys.Used(pool.currentState, addr) {
 		return pool.currentState.GetBalance(addr), nil
 	}
 	s := sessionkeys.Get(pool.currentState, addr)
@@ -1968,23 +1966,24 @@ func (pool *TxPool) sessionPoolBalances(addr common.Address) (*big.Int, *big.Int
 	return a, g
 }
 
+// validSessionQueued rechecks delegation against the next block after head changes.
+// It checks one transaction; aggregate reservation is handled during promotion.
 func (pool *TxPool) validSessionQueued(addr common.Address, tx *types.Transaction) bool {
-	if !pool.sessionKeysActive() || !sessionkeys.Used(pool.currentState, addr) {
+	if !sessionkeys.Used(pool.currentState, addr) {
 		return true
 	}
 	s := sessionkeys.Get(pool.currentState, addr)
 	fee := new(big.Int).Mul(tx.GasFeeCap(), new(big.Int).SetUint64(tx.Gas()))
 	spend := sessionkeys.NativeSpend(tx.To(), tx.Data(), tx.Value())
-	return tx.Protected() && tx.Nonce() != math.MaxUint64 && s != nil && pool.currentState.GetBalance(s.Owner).Cmp(spend) >= 0 && sessionkeys.Validate(s, pool.chain.CurrentBlock().NumberU64()+1, tx.To(), tx.Data(), spend, fee) == nil
+	return tx.Protected() && tx.Nonce() != math.MaxUint64 && s != nil &&
+		pool.currentState.GetBalance(s.Owner).Cmp(spend) >= 0 &&
+		sessionkeys.Validate(s, pool.chain.CurrentBlock().NumberU64()+1, tx.To(), tx.Data(), spend, fee) == nil
 }
 
 // canReserveSessionFunds bounds executable pending transactions conservatively
 // by fee caps, across signer lanes sharing the same owner. It is mempool policy;
 // serial StateTransition validation remains the consensus authority.
 func (pool *TxPool) canReserveSessionFunds(from common.Address, tx *types.Transaction) bool {
-	if !pool.sessionKeysActive() {
-		return true
-	}
 	payer := from
 	s := sessionkeys.Get(pool.currentState, from)
 	if s != nil {
@@ -2028,14 +2027,13 @@ func (pool *TxPool) canReserveSessionFunds(from common.Address, tx *types.Transa
 // demoteSessionReservations keeps funded nonce prefixes, returning their
 // unfundable suffixes to the queue. Signer ordering is deterministic pool policy.
 func (pool *TxPool) demoteSessionReservations() {
-	if !pool.sessionKeysActive() {
-		return
-	}
 	accounts := make([]common.Address, 0, len(pool.pending))
 	for addr := range pool.pending {
 		accounts = append(accounts, addr)
 	}
-	sort.Slice(accounts, func(i, j int) bool { return bytes.Compare(accounts[i][:], accounts[j][:]) < 0 })
+	sort.Slice(accounts, func(i, j int) bool {
+		return bytes.Compare(accounts[i][:], accounts[j][:]) < 0
+	})
 	nativeLeft := make(map[common.Address]*big.Int)
 	gasLeft := make(map[common.Address]*big.Int)
 	for _, addr := range accounts {
@@ -2057,8 +2055,11 @@ func (pool *TxPool) demoteSessionReservations() {
 		for _, tx := range list.Flatten() {
 			amount := sessionkeys.NativeSpend(tx.To(), tx.Data(), tx.Value())
 			fee := new(big.Int).Mul(tx.GasFeeCap(), new(big.Int).SetUint64(tx.Gas()))
-			if amount.Cmp(nativeLeft[payer]) > 0 || fee.Cmp(gasLeft[payer]) > 0 || (s != nil && (amount.Cmp(keyNative) > 0 || fee.Cmp(keyGas) > 0)) {
-				suffix := list.txs.Filter(func(pending *types.Transaction) bool { return pending.Nonce() >= tx.Nonce() })
+			if amount.Cmp(nativeLeft[payer]) > 0 || fee.Cmp(gasLeft[payer]) > 0 ||
+				(s != nil && (amount.Cmp(keyNative) > 0 || fee.Cmp(keyGas) > 0)) {
+				suffix := list.txs.Filter(func(pending *types.Transaction) bool {
+					return pending.Nonce() >= tx.Nonce()
+				})
 				for _, pending := range suffix {
 					pool.enqueueTx(pending.Hash(), pending, pool.locals.contains(addr), false)
 				}

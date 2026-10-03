@@ -257,17 +257,101 @@ var (
 	//
 	// This configuration is intentionally not using keyed fields to force anyone
 	// adding flags to the config to also have to set these fields.
-	AllEthashProtocolChanges = &ChainConfig{nil, big.NewInt(1337), big.NewInt(0), nil, false, big.NewInt(0), common.Hash{}, big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, nil, nil, nil, false, big.NewInt(1337), nil, false, new(EthashConfig), nil}
+	AllEthashProtocolChanges = &ChainConfig{
+		big.NewInt(1337),
+		big.NewInt(0),
+		nil,
+		false,
+		big.NewInt(0),
+		common.Hash{},
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		nil,
+		nil,
+		nil,
+		nil,
+		false,
+		big.NewInt(1337),
+		nil,
+		false,
+		new(EthashConfig),
+		nil,
+	}
 
 	// AllCliqueProtocolChanges contains every protocol change (EIPs) introduced
 	// and accepted by the Ethereum core developers into the Clique consensus.
 	//
 	// This configuration is intentionally not using keyed fields to force anyone
 	// adding flags to the config to also have to set these fields.
-	AllCliqueProtocolChanges = &ChainConfig{nil, big.NewInt(1337), big.NewInt(0), nil, false, big.NewInt(0), common.Hash{}, big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, nil, nil, nil, nil, nil, false, big.NewInt(1337), nil, false, nil, &CliqueConfig{Period: 0, Epoch: 30000}}
+	AllCliqueProtocolChanges = &ChainConfig{
+		big.NewInt(1337),
+		big.NewInt(0),
+		nil,
+		false,
+		big.NewInt(0),
+		common.Hash{},
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		false,
+		big.NewInt(1337),
+		nil,
+		false,
+		nil,
+		&CliqueConfig{Period: 0, Epoch: 30000},
+	}
 
-	TestChainConfig = &ChainConfig{nil, big.NewInt(1), big.NewInt(0), nil, false, big.NewInt(0), common.Hash{}, big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, nil, nil, nil, false, big.NewInt(1), nil, false, new(EthashConfig), nil}
-	TestRules       = TestChainConfig.Rules(new(big.Int), false)
+	TestChainConfig = &ChainConfig{
+		big.NewInt(1),
+		big.NewInt(0),
+		nil,
+		false,
+		big.NewInt(0),
+		common.Hash{},
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		nil,
+		nil,
+		nil,
+		nil,
+		false,
+		big.NewInt(1),
+		nil,
+		false,
+		new(EthashConfig),
+		nil,
+	}
+	TestRules = TestChainConfig.Rules(new(big.Int), false)
 )
 
 // NetworkNames are user friendly names to use in the chain spec banner.
@@ -333,8 +417,6 @@ type CheckpointOracleConfig struct {
 // that any network, identified by its genesis block, can have its own
 // set of configuration options.
 type ChainConfig struct {
-	SessionKeysBlock *big.Int `json:"sessionKeysBlock,omitempty"` // Opt-in protocol-native delegation fork.
-
 	ChainID *big.Int `json:"chainId"` // chainId identifies the current chain and is used for replay protection
 
 	HomesteadBlock *big.Int `json:"homesteadBlock,omitempty"` // Homestead switch block (nil = no fork, 0 = already homestead)
@@ -596,11 +678,10 @@ func (c *ChainConfig) CheckCompatible(newcfg *ChainConfig, height uint64) *Confi
 // CheckConfigForkOrder checks that we don't "skip" any forks, geth isn't pluggable enough
 // to guarantee that forks can be implemented in a different order than on official networks
 func (c *ChainConfig) CheckConfigForkOrder() error {
-	if c.SessionKeysBlock != nil && (c.ChainID == nil || c.ChainID.Sign() < 0 || c.ChainID.BitLen() > 256 || (c.EthPoWForkBlock != nil && (c.ChainID_ALT == nil || c.ChainID_ALT.Sign() < 0 || c.ChainID_ALT.BitLen() > 256))) {
-		return fmt.Errorf("session keys require a uint256 chain ID signing domain")
-	}
-	if c.SessionKeysBlock != nil && (c.SessionKeysBlock.Sign() < 0 || !c.SessionKeysBlock.IsUint64() || c.EIP155Block == nil || c.EIP155Block.Cmp(c.SessionKeysBlock) > 0) {
-		return fmt.Errorf("session keys require an unsigned uint64 activation at or after EIP155")
+	if c.ChainID == nil || c.ChainID.Sign() < 0 || c.ChainID.BitLen() > 256 ||
+		(c.EthPoWForkBlock != nil &&
+			(c.ChainID_ALT == nil || c.ChainID_ALT.Sign() < 0 || c.ChainID_ALT.BitLen() > 256)) {
+		return fmt.Errorf("native Aplo requires a uint256 chain ID signing domain")
 	}
 	type fork struct {
 		name     string
@@ -650,16 +731,14 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 }
 
 func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head *big.Int) *ConfigCompatError {
-	if isForkIncompatible(c.SessionKeysBlock, newcfg.SessionKeysBlock, head) {
-		return newCompatError("Session keys fork block", c.SessionKeysBlock, newcfg.SessionKeysBlock)
+	// Native acceptance signatures use chain ID from genesis, independently of
+	// the EIP158 schedule. The existing EthPoW fork selects the alternate domain.
+	if !configNumEqual(c.ChainID, newcfg.ChainID) {
+		return newCompatError("Chain ID", common.Big0, common.Big0)
 	}
-	// Session acceptance proofs and protected transactions share the signing
-	// domain. Lock it independently of EIP158, including the EthPoW alternate ID.
-	if (c.IsSessionKeys(head) || newcfg.IsSessionKeys(head)) && !configNumEqual(c.ChainID, newcfg.ChainID) {
-		return newCompatError("Session keys chain ID", c.SessionKeysBlock, newcfg.SessionKeysBlock)
-	}
-	if ((c.IsSessionKeys(head) && c.IsEthPoWFork(head)) || (newcfg.IsSessionKeys(head) && newcfg.IsEthPoWFork(head))) && !configNumEqual(c.ChainID_ALT, newcfg.ChainID_ALT) {
-		return newCompatError("Session keys EthPoW chain ID", c.sessionKeysAltDomainBlock(), newcfg.sessionKeysAltDomainBlock())
+	if (c.IsEthPoWFork(head) || newcfg.IsEthPoWFork(head)) &&
+		!configNumEqual(c.ChainID_ALT, newcfg.ChainID_ALT) {
+		return newCompatError("EthPoW chain ID", c.EthPoWForkBlock, newcfg.EthPoWForkBlock)
 	}
 	if isForkIncompatible(c.HomesteadBlock, newcfg.HomesteadBlock, head) {
 		return newCompatError("Homestead fork block", c.HomesteadBlock, newcfg.HomesteadBlock)
@@ -729,16 +808,6 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head *big.Int) *Confi
 		return newCompatError("EthPoW fork support flag", c.EthPoWForkBlock, newcfg.EthPoWForkBlock)
 	}
 	return nil
-}
-
-func (c *ChainConfig) sessionKeysAltDomainBlock() *big.Int {
-	if c.SessionKeysBlock == nil || c.EthPoWForkBlock == nil {
-		return nil
-	}
-	if c.SessionKeysBlock.Cmp(c.EthPoWForkBlock) > 0 {
-		return c.SessionKeysBlock
-	}
-	return c.EthPoWForkBlock
 }
 
 // isForkIncompatible returns true if a fork scheduled at s1 cannot be rescheduled to
@@ -836,6 +905,3 @@ func (c *ChainConfig) Rules(num *big.Int, isMerge bool) Rules {
 
 // MinerDAOAddress EIP1559 remain gas to DAO Address
 var MinerDAOAddress = common.HexToAddress("0x01c2C2FB1C31d902FA6C8A5A60a93353704BA4bc")
-
-// IsSessionKeys reports whether protocol-native delegation is enabled.
-func (c *ChainConfig) IsSessionKeys(num *big.Int) bool { return isForked(c.SessionKeysBlock, num) }

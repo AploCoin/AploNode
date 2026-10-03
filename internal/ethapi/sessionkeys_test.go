@@ -23,33 +23,72 @@ type sessionRPCBackend struct {
 	db *state.StateDB
 }
 
-func (b *sessionRPCBackend) StateAndHeaderByNumberOrHash(context.Context, rpc.BlockNumberOrHash) (*state.StateDB, *types.Header, error) {
+func (b *sessionRPCBackend) StateAndHeaderByNumberOrHash(
+	context.Context, rpc.BlockNumberOrHash,
+) (*state.StateDB, *types.Header, error) {
 	return b.db.Copy(), b.current, nil
 }
-func (b *sessionRPCBackend) BlockByNumberOrHash(context.Context, rpc.BlockNumberOrHash) (*types.Block, error) {
+
+func (b *sessionRPCBackend) BlockByNumberOrHash(
+	context.Context, rpc.BlockNumberOrHash,
+) (*types.Block, error) {
 	return types.NewBlockWithHeader(b.current), nil
 }
-func (b *sessionRPCBackend) GetEVM(_ context.Context, msg core.Message, db *state.StateDB, h *types.Header, cfg *vm.Config) (*vm.EVM, func() error, error) {
-	ctx := vm.BlockContext{CanTransfer: core.CanTransfer, Transfer: core.Transfer, GetHash: func(uint64) common.Hash { return common.Hash{} }, BlockNumber: h.Number, Time: big.NewInt(0), Difficulty: big.NewInt(1), GasLimit: h.GasLimit, BaseFee: h.BaseFee}
+
+func (b *sessionRPCBackend) GetEVM(
+	_ context.Context,
+	msg core.Message,
+	db *state.StateDB,
+	h *types.Header,
+	cfg *vm.Config,
+) (*vm.EVM, func() error, error) {
+	ctx := vm.BlockContext{
+		CanTransfer: core.CanTransfer,
+		Transfer:    core.Transfer,
+		GetHash:     func(uint64) common.Hash { return common.Hash{} },
+		BlockNumber: h.Number,
+		Time:        big.NewInt(0),
+		Difficulty:  big.NewInt(1),
+		GasLimit:    h.GasLimit,
+		BaseFee:     h.BaseFee,
+	}
 	return vm.NewEVM(ctx, core.NewEVMTxContext(msg), db, b.config, *cfg, nil), func() error { return nil }, nil
 }
+
 func TestSessionKeysRPCSimulation(t *testing.T) {
 	db, _ := state.New(common.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()), nil)
 	db.SetCode(params.GAploContractAddress, common.FromHex(params.GAPLO))
+	db.SetNonce(sessionkeys.Address, 1)
 	owner := common.HexToAddress("0xbeef")
 	key := common.HexToAddress("0xaaaa")
 	target := common.HexToAddress("0xbbbb")
 	db.SetBalance(owner, big.NewInt(100))
-	db.SetState(params.GAploContractAddress, common.BigToHash(big.NewInt(2)), common.BigToHash(big.NewInt(1000000)))
+	db.SetState(
+		params.GAploContractAddress, common.BigToHash(big.NewInt(2)),
+		common.BigToHash(big.NewInt(1000000)),
+	)
 	db.SetState(params.GAploContractAddress, sessionkeys.GaploSlot(owner), common.BigToHash(big.NewInt(1000000)))
 	// Return ORIGIN and CALLER in two words.
 	db.SetCode(target, common.FromHex("326000523360205260406000f3"))
-	if err := sessionkeys.Create(db, owner, key, target, [][4]byte{{1, 2, 3, 4}}, big.NewInt(100), big.NewInt(80000), 20, 1); err != nil {
+	if err := sessionkeys.Create(
+		db, owner, key, target, [][4]byte{{1, 2, 3, 4}},
+		big.NewInt(100), big.NewInt(80000), 20, 1,
+	); err != nil {
 		t.Fatal(err)
 	}
 	config := *params.TestChainConfig
-	config.SessionKeysBlock = big.NewInt(1)
-	b := &sessionRPCBackend{backendMock: &backendMock{config: &config, current: &types.Header{Number: big.NewInt(2), GasLimit: 30000000, Difficulty: big.NewInt(1), BaseFee: big.NewInt(1)}}, db: db}
+	b := &sessionRPCBackend{
+		backendMock: &backendMock{
+			config: &config,
+			current: &types.Header{
+				Number:     big.NewInt(2),
+				GasLimit:   30000000,
+				Difficulty: big.NewInt(1),
+				BaseFee:    big.NewInt(1),
+			},
+		},
+		db: db,
+	}
 	data := hexutil.Bytes{1, 2, 3, 4}
 	price := hexutil.Big(*big.NewInt(1))
 	value := hexutil.Big(*big.NewInt(7))
@@ -68,10 +107,14 @@ func TestSessionKeysRPCSimulation(t *testing.T) {
 	if err != nil || result.Err != nil {
 		t.Fatalf("call: %v %v", err, result)
 	}
-	if len(result.ReturnData) != 64 || common.BytesToAddress(result.ReturnData[:32]) != owner || common.BytesToAddress(result.ReturnData[32:]) != key {
+	if len(result.ReturnData) != 64 ||
+		common.BytesToAddress(result.ReturnData[:32]) != owner ||
+		common.BytesToAddress(result.ReturnData[32:]) != key {
 		t.Fatal("RPC simulation lost delegated identities")
 	}
-	if db.GetNonce(key) != 0 || db.GetBalance(owner).Cmp(big.NewInt(100)) != 0 || sessionkeys.Get(db, key).AploSpent.Cmp(big.NewInt(100)) != 0 {
+	if db.GetNonce(key) != 0 ||
+		db.GetBalance(owner).Cmp(big.NewInt(100)) != 0 ||
+		sessionkeys.Get(db, key).AploSpent.Cmp(big.NewInt(100)) != 0 {
 		t.Fatal("RPC mutated live state")
 	}
 	data[0] = 9

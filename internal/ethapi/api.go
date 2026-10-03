@@ -1092,8 +1092,7 @@ func DoEstimateGas(ctx context.Context, b Backend, args TransactionArgs, blockNr
 		}
 		payer := *args.From
 		var session *sessionkeys.Session
-		active := b.ChainConfig().IsSessionKeys(header.Number)
-		if active && sessionkeys.Used(state, payer) {
+		if sessionkeys.Used(state, payer) {
 			session = sessionkeys.Get(state, payer)
 			if session == nil {
 				return 0, sessionkeys.ErrInvalid
@@ -1105,18 +1104,11 @@ func DoEstimateGas(ctx context.Context, b Backend, args TransactionArgs, blockNr
 			return 0, err
 		}
 		available := new(big.Int).Set(balance)
-		if active {
-			if args.Value != nil && state.GetBalance(payer).Cmp(args.Value.ToInt()) < 0 {
-				return 0, core.ErrInsufficientFundsForTransfer
-			}
-			if session != nil && available.Cmp(session.GAploSpent) > 0 {
-				available.Set(session.GAploSpent)
-			}
-		} else if args.Value != nil {
-			if args.Value.ToInt().Cmp(available) > 0 {
-				return 0, core.ErrInsufficientFundsForTransfer
-			}
-			available.Sub(available, args.Value.ToInt())
+		if args.Value != nil && state.GetBalance(payer).Cmp(args.Value.ToInt()) < 0 {
+			return 0, core.ErrInsufficientFundsForTransfer
+		}
+		if session != nil && available.Cmp(session.GAploSpent) > 0 {
+			available.Set(session.GAploSpent)
 		}
 		allowance := new(big.Int).Div(available, feeCap)
 		if allowance.IsUint64() && hi > allowance.Uint64() {
@@ -2080,6 +2072,8 @@ func toHexSlice(b [][]byte) []string {
 	return r
 }
 
+// GetGaploBalance executes a GAplo balance query with the requested state overrides
+// and call timeout. Callers select the owner address when simulating a session.
 func GetGaploBalance(ctx context.Context, b Backend, args TransactionArgs, blockNrOrHash rpc.BlockNumberOrHash, overrides *StateOverride, timeout time.Duration, globalGasCap uint64) (*big.Int, error) {
 	defer func(start time.Time) { log.Debug("Executing EVM call finished", "runtime", time.Since(start)) }(time.Now())
 

@@ -11,15 +11,24 @@ import (
 	"github.com/ethereum/go-ethereum/event"
 )
 
+// sessionPoolChain exposes a mutable head to test next-block pool policy.
 type sessionPoolChain struct {
 	*testBlockChain
 	block *types.Block
 }
 
 func (c *sessionPoolChain) CurrentBlock() *types.Block { return c.block }
+
 func TestSessionKeysPoolOwnerFundsAndHeadPolicy(t *testing.T) {
 	f := newIndependentSessionFixture(t, []byte{0}, 2, big.NewInt(100), big.NewInt(1000000))
-	chain := &sessionPoolChain{testBlockChain: &testBlockChain{statedb: f.db, gasLimit: f.header.GasLimit, chainHeadFeed: new(event.Feed)}, block: types.NewBlockWithHeader(f.header)}
+	chain := &sessionPoolChain{
+		testBlockChain: &testBlockChain{
+			statedb:       f.db,
+			gasLimit:      f.header.GasLimit,
+			chainHeadFeed: new(event.Feed),
+		},
+		block: types.NewBlockWithHeader(f.header),
+	}
 	cfg := DefaultTxPoolConfig
 	cfg.Journal = ""
 	pool := NewTxPool(cfg, f.config, chain)
@@ -53,7 +62,9 @@ func TestSessionKeysPoolOwnerFundsAndHeadPolicy(t *testing.T) {
 	if err := sessionkeys.Revoke(f.db, f.owner, f.session); err != nil {
 		t.Fatal(err)
 	}
-	removed, invalid := pending.FilterSession(func(tx *types.Transaction) bool { return pool.validSessionQueued(f.session, tx) })
+	removed, invalid := pending.FilterSession(func(tx *types.Transaction) bool {
+		return pool.validSessionQueued(f.session, tx)
+	})
 	if len(removed)+len(invalid) != 2 || pending.Len() != 0 {
 		t.Fatal("pending revoked nonce lane retained")
 	}
@@ -78,7 +89,14 @@ func TestSessionKeysPoolOwnerFundsAndHeadPolicy(t *testing.T) {
 
 func TestSessionKeysPoolCumulativeBudgetsAndSharedOwner(t *testing.T) {
 	f := newIndependentSessionFixture(t, []byte{0}, 100, big.NewInt(100), big.NewInt(150000))
-	chain := &sessionPoolChain{testBlockChain: &testBlockChain{statedb: f.db, gasLimit: f.header.GasLimit, chainHeadFeed: new(event.Feed)}, block: types.NewBlockWithHeader(f.header)}
+	chain := &sessionPoolChain{
+		testBlockChain: &testBlockChain{
+			statedb:       f.db,
+			gasLimit:      f.header.GasLimit,
+			chainHeadFeed: new(event.Feed),
+		},
+		block: types.NewBlockWithHeader(f.header),
+	}
 	cfg := DefaultTxPoolConfig
 	cfg.Journal = ""
 	pool := NewTxPool(cfg, f.config, chain)
@@ -100,7 +118,11 @@ func TestSessionKeysPoolCumulativeBudgetsAndSharedOwner(t *testing.T) {
 	}
 	secondKey, _ := crypto.GenerateKey()
 	secondAddr := crypto.PubkeyToAddress(secondKey.PublicKey)
-	if err := sessionkeys.Create(f.db, f.owner, secondAddr, f.target, [][4]byte{independentSessionSelector}, big.NewInt(100), big.NewInt(150000), 100, 1); err != nil {
+	if err := sessionkeys.Create(
+		f.db, f.owner, secondAddr, f.target,
+		[][4]byte{independentSessionSelector},
+		big.NewInt(100), big.NewInt(150000), 100, 1,
+	); err != nil {
 		t.Fatal(err)
 	}
 	sibling := f.signedTx(t, secondKey, 0, f.target, big.NewInt(60), 60000, independentSessionSelector[:])
@@ -109,7 +131,10 @@ func TestSessionKeysPoolCumulativeBudgetsAndSharedOwner(t *testing.T) {
 		t.Fatal("shared owner native overcommit admitted")
 	}
 	f.db.SetBalance(f.owner, big.NewInt(1000))
-	f.db.SetState(common.HexToAddress("0x1234"), sessionkeys.GaploSlot(f.owner), common.BigToHash(big.NewInt(100000)))
+	f.db.SetState(
+		common.HexToAddress("0x1234"), sessionkeys.GaploSlot(f.owner),
+		common.BigToHash(big.NewInt(100000)),
+	)
 	if pool.canReserveSessionFunds(secondAddr, sibling) {
 		t.Fatal("shared owner GAplo overcommit admitted")
 	}
@@ -117,7 +142,14 @@ func TestSessionKeysPoolCumulativeBudgetsAndSharedOwner(t *testing.T) {
 
 func TestSessionKeysPoolReorgKeepsFundedPrefixAndConsistentHeap(t *testing.T) {
 	f := newIndependentSessionFixture(t, []byte{0}, 100, big.NewInt(150), big.NewInt(1000000))
-	chain := &sessionPoolChain{testBlockChain: &testBlockChain{statedb: f.db, gasLimit: f.header.GasLimit, chainHeadFeed: new(event.Feed)}, block: types.NewBlockWithHeader(f.header)}
+	chain := &sessionPoolChain{
+		testBlockChain: &testBlockChain{
+			statedb:       f.db,
+			gasLimit:      f.header.GasLimit,
+			chainHeadFeed: new(event.Feed),
+		},
+		block: types.NewBlockWithHeader(f.header),
+	}
 	cfg := DefaultTxPoolConfig
 	cfg.Journal = ""
 	pool := NewTxPool(cfg, f.config, chain)
@@ -132,7 +164,10 @@ func TestSessionKeysPoolReorgKeepsFundedPrefixAndConsistentHeap(t *testing.T) {
 	// A reorg lowers owner funds: retain nonce zero and requeue nonce one.
 	f.db.SetBalance(f.owner, big.NewInt(100))
 	pool.demoteUnexecutables()
-	if pool.pending[f.session].Len() != 1 || pool.pending[f.session].LastElement().Nonce() != 0 || pool.queue[f.session].Len() != 1 || pool.queue[f.session].LastElement().Nonce() != 1 {
+	if pool.pending[f.session].Len() != 1 ||
+		pool.pending[f.session].LastElement().Nonce() != 0 ||
+		pool.queue[f.session].Len() != 1 ||
+		pool.queue[f.session].LastElement().Nonce() != 1 {
 		t.Fatal("head change discarded funded prefix or lost suffix")
 	}
 	ready := pool.pending[f.session].Ready(0)
@@ -142,14 +177,19 @@ func TestSessionKeysPoolReorgKeepsFundedPrefixAndConsistentHeap(t *testing.T) {
 	// Explicit delegation policy removal must rebuild its strict nonce heap.
 	list = newTxList(true)
 	for nonce := uint64(0); nonce < 3; nonce++ {
-		list.Add(f.signedTx(t, f.sessionKey, nonce, f.target, new(big.Int), 60000, independentSessionSelector[:]), 10)
+		list.Add(
+			f.signedTx(t, f.sessionKey, nonce, f.target, new(big.Int), 60000, independentSessionSelector[:]),
+			10,
+		)
 	}
 	removed, invalid := list.FilterSession(func(tx *types.Transaction) bool { return tx.Nonce() != 1 })
 	if len(removed) != 1 || len(invalid) != 1 {
 		t.Fatal("policy suffix removal failed")
 	}
 	ready = list.Ready(0)
-	if len(ready) != 1 || ready[0] == nil || ready[0].Nonce() != 0 || list.Len() != 0 || len(*list.txs.index) != 0 {
+	if len(ready) != 1 ||
+		ready[0] == nil || ready[0].Nonce() != 0 ||
+		list.Len() != 0 || len(*list.txs.index) != 0 {
 		t.Fatal("policy filter left stale heap entries")
 	}
 }
