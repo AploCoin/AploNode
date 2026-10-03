@@ -1,61 +1,47 @@
-# Session Keys independent security and consensus guard
+# Independent Session Keys guard review
 
-**Verdict: PASS for the frozen implementation source manifest below.** This is a source-level protocol guard, not authorization to activate or deploy the fork. The parent requested the final guard verdict after the production freeze. No production source was edited by this reviewer.
+## Verdict
 
-## Reviewed snapshot
+**PASS with verification limits.** I found no unresolved Session Keys consensus or security defect in the reviewed production snapshot. This verdict covers the native-from-genesis implementation and the checks listed here; it does not certify a complete repository test pass, a public chain genesis, or an upgrade path for an existing network.
 
-- Git base/HEAD: `0416fd355f53f0d09b256e194d4f44f9bb91663e` (the implementation remains an uncommitted working-tree diff).
-- Production-source manifest SHA-256: `b122130481661ff7a6be1058eaca61281ff28b116593181b1c06cb2271c9302c`.
-- Hash procedure: for each sorted path in `/private/tmp/aplo-session-production-manifest.txt`, hash `path || NUL || file bytes || NUL` with SHA-256. I independently recomputed the value above. The manifest contains only changed/new non-test Go sources; tests and docs are outside this hash.
-- `git diff --check`: passed.
+## Snapshot
 
-The reviewed production manifest covers `builtin/aplo/aplo.go`, `builtin/sessionkeys/registry.go`, the Clique/Ethash/Beacon finalizers, `core/genesis.go`, state DB/processor/transition/tx-list/tx-pool/EVM paths, `examples/sessionkeys/main.go`, `internal/ethapi/api.go`, `miner/worker.go`, `params/config.go`, and `params/legacy_genesis_hashes.go`.
+- Base: `0416fd355f53f0d09b256e194d4f44f9bb91663e`.
+- Reviewed commit: `9b62907f381f1991bff2b87183635c047fd715a7` (`core: clarify native session reward qualification`).
+- Production-source manifest SHA-256: **`75b6ec800698eb081bbcdade46be026fa9f170d955e55b19b90570b44835ece9`**.
+- The digest was recomputed over the 17 sorted paths in [session-keys-production-manifest.txt](session-keys-production-manifest.txt), updating SHA-256 with `path UTF-8 || NUL || file bytes || NUL` for each path. It identifies production Go sources, not tests or documentation.
 
-## Guard findings
+I reviewed the three-page Session Keys design as controlling for caller semantics where it conflicts with the 17-page context document, and inspected the current registry, genesis, transaction transition, EVM, StateDB, transaction pool, RPC, miner, and consensus-finalization paths.
 
-I found no remaining critical consensus or security defect in this frozen source snapshot. The checked invariants are:
+## Security and consensus findings
 
-- The session key remains the transaction signer and nonce account and the top-level `msg.sender`; the owner is `tx.origin` and the payer for top-level native value and GAplo fees. Nested CALLs retain ordinary caller and payer behavior. Registry mutation checks the immediate direct EOA caller against origin, rejects nested/CALLCODE/DELEGATECALL mutation, and cannot be authorized merely because a session transaction has the owner as origin.
-- Registration requires a low-S secp256k1 proof of possession from the proposed key, bound to owner, effective chain ID, registry/version, target, ordered selectors, both allowances, and expiry. This closes fresh-address squatting. The selected authorization is one nonzero target and 1–32 unique exact four-byte selectors. Used keys cannot be reused, originate ordinary transactions, become owners, or be recreated through contract creation; owner/session equality and delegation chains are rejected.
-- Registry state is journaled at the reserved `0x1237` address. Owner and absolute-expiry lists use indexed swap removal; live keys are capped at 64 per owner and 32 per expiry bucket. Expiry is inclusive through the last authorized block, bounded to 1000 blocks with checked `uint64` arithmetic, and cleaned after block transactions/rewards. Permanent tombstones preserve recipient routing after revoke/expiry. Snapshot/revert, state-copy, commit/reopen, canonical reorg, and restart behavior are covered.
-- Session admission reserves `gasLimit * feeCap` against owner GAplo balance and the remaining GAplo allowance. Actual settlement charges used gas at effective gas price; refunds return unused gas. APLO value and explicit APLO builtin transfers use the independent native allowance and owner balance. A VM revert/OOG rolls back value and allowance changes while retaining the included transaction's nonce and actual gas charge; invalid prechecks revert StateDB and GasPool changes.
-- Native credits route through StateDB.AddBalance, including internal CALL, SELFDESTRUCT, and consensus credits. For the exact canonical GAplo runtime, the supported `transfer`, `transferFrom`, and root `refund` recipient words are rewritten to the permanent owner. Arbitrary ERC20/NFT contract storage is not redirected. Incoming credits and mining/reward flows do not refill session allowances.
-- Activation is opt-in (`sessionKeysBlock` is nil by default), requires a protected chain-ID domain and a uint64 fork height at/after EIP-155, and participates in fork-ID calculation and config compatibility. Genesis/fork-boundary guards, block import, miner finalization, txpool admission/revalidation, and nonce RPC paths were reviewed. The fork-off execution paths remain gated.
+The session key remains the transaction signer and nonce lane. On the authorized top-level call, `msg.sender` is the session key and `tx.origin` is its owner; nested calls preserve ordinary EVM caller behavior. Registration and revocation require a direct, zero-value owner EOA call. An owner appearing only as `tx.origin` cannot authorize a nested registry mutation. The single top-level target and exact four-byte selector are checked before execution; a whitelisted contract can still make its normal nested calls, so target contracts must not rely on `tx.origin` alone for authorization.
 
-The 3-page design PDF controls the conflicting caller semantics: top-level `msg.sender=session`, `tx.origin=owner`. The 17-page context PDF says owner should be `msg.sender`; that conflict is resolved explicitly in the design docs and in code, consistent with the user-provided target. The longer document's wider permission/token model is outside this narrowed implementation.
+Registration requires a low-S key-possession signature binding the owner, key, effective chain ID, target, ordered selectors, budgets, and expiry. Invalid or absent signing domains are rejected rather than treated as chain ID zero. This closes the fresh-address squatting issue: an owner cannot register somebody else's unproven key. Proofs use the chain ID replay domain, not a unique genesis identity; networks intentionally sharing a chain ID can replay the proof, just as they can replay EIP-155 transactions.
 
-## Verification evidence
+Session transactions reserve the maximum GAplo fee against the owner's separate remaining fee allowance and charge the actual fee. Top-level native value and APLO builtin transfers debit owner funds and the APLO allowance. EVM reverts restore value and allowance changes while retaining the signer nonce and actual gas charge; invalid transaction prechecks do not commit state. Pool reservations account for pending owner/key spending and are rechecked when the head changes. Expiry is inclusive through the last block, cleanup follows transaction and reward execution, and bounded owner/expiry indexes, finite lifetime, and permanent used-key tombstones prevent unbounded cleanup and address reuse. Revoke and expiry remove authorization but keep the native credit recipient mapped to the owner.
 
-Using Go 1.20.14 and the task-local caches:
+Genesis derivation, commit, and setup use the same allocation normalization: registry `0x1237` is code-free with nonce one and empty genesis storage, and GAplo `0x1234` has exactly the canonical runtime. Conflicting registry allocations and noncanonical GAplo runtime are rejected. Runtime state checks fail closed; they do not initialize protocol accounts during the first transaction. Recovery verifies the persisted allocation against the original header state root before writing. Native credits, including internal CALL, SELFDESTRUCT, fee/DAO credit, and consensus rewards, use the tombstone recipient. Canonical GAplo `transfer`, `transferFrom`, and root-only `refund` recipient routing preserves malformed ABI words so the contract decoder rejects them. Arbitrary token storage is outside this routing guarantee.
 
-```sh
-PATH=/private/tmp/aplo-toolchain/go/bin:$PATH GOPATH=/private/tmp/aplo-go-work GOCACHE=/private/tmp/aplo-go-cache go test -race ./builtin/sessionkeys ./core -run 'SessionKeys' -count=1
-```
+The source and tests cover expiry/revoke cleanup, snapshots, branch isolation, processor/miner state-root parity, transaction-pool reservations, and import/reorg/restart. Regular EOA identity is explicitly exercised, and a fresh `--dev` smoke sends its first ordinary transaction successfully. The GAplo mining reward tier intentionally reads the owner's stake, while `stake` and `unstake` still use the actual caller and do not spend owner stake. I found no focused test asserting a session-triggered `mine` payout against owner stake, so that specific reward interaction remains unverified.
 
-Passed for both packages. This includes the Session Keys protocol/security tests and the actual `BlockChain.InsertChain` reorg/restart test.
+## Verification
 
-```sh
-PATH=/private/tmp/aplo-toolchain/go/bin:$PATH GOPATH=/private/tmp/aplo-go-work GOCACHE=/private/tmp/aplo-go-cache go test ./core -run '^TestSessionKeysInsertChainReorgAndRestart$' -count=1
-PATH=/private/tmp/aplo-toolchain/go/bin:$PATH GOPATH=/private/tmp/aplo-go-work GOCACHE=/private/tmp/aplo-go-cache go test ./params -count=1
-PATH=/private/tmp/aplo-toolchain/go/bin:$PATH GOPATH=/private/tmp/aplo-go-work GOCACHE=/private/tmp/aplo-go-cache go build -o /private/tmp/aplo-geth-guard ./cmd/geth
-```
+The focused tests below ran on commit `68515adb5023625f1238f09bd623debeccd23c52` with production manifest SHA-256 `bf7cae691649430094bddf1fd829f4d0235016e588387a111c97500847418086`. The reviewed commit above changes only the `core/state_transition.go` inline comment describing session mining-reward qualification; I verified the exact two-line diff and confirmed no executable code changed. I did not rerun tests for this comment-only follow-up. Using Go 1.20.14 at `/private/tmp/aplo-toolchain/go/bin/go`, with `GOPATH=/private/tmp/aplo-go-work` and `GOCACHE=/private/tmp/aplo-go-cache`, I independently ran:
 
-All three passed. The build emitted only platform dependency deprecation warnings. `git diff --check` also passed. The root task separately reports its broader focused Session Keys sweep, fork-ID boundary test, signing/init checks, and EOA baseline comparisons as passing/complete.
+- `go test -race ./builtin/sessionkeys ./core ./params -run 'SessionKeys|NativeGenesis|Genesis.*Native|DeveloperGenesisRejects' -count=1` — **PASS**.
+- `go test ./core -run '^TestSessionKeys(NativeGenesis|SetupRejectsLegacyGenesisWithoutMigration|CommitGenesisState)' -count=1 -v` — **PASS**, including legacy-genesis rejection without migration, conflicting allocation rejection, recovery after lost trie state, and rejection of tampered/legacy specs without writes.
+- `go test ./core ./internal/ethapi ./miner ./params -run 'SessionKeys|NativeGenesis|Genesis.*Native|DeveloperGenesisRejects' -count=1` — **PASS**.
+- `go test ./core -run '^TestSessionKeysInsertChainReorgAndRestart$' -count=1 -v` — **PASS**.
+- `go build -o /private/tmp/aplo-geth-guard ./cmd/geth` — **PASS**; only existing macOS C dependency deprecation warnings appeared.
+- On the reviewed commit, `gofmt -d` over the 17 production manifest files — no output. `git diff --check` — **PASS**.
 
-Seven existing ordinary transaction-pool tests remain red on both the baseline archive and this snapshot after test-only compile-fixture repairs; comparison logs are `/private/tmp/aplo-pool-{baseline,current}-<TestName>.log`. The identical failure signatures are:
+The separate testing record also reports a passing bounded registry fuzz run (167,730 executions), `go test ./console -count=1`, the `./params/...` suite, offline protected signing, generated-genesis initialization, and a real `--dev` first transaction. Its smoke summary records registry nonce `1`, receipt status `0x1`, block `1`, and `21,000` gas.
 
-- `TestTransactionQueueTimeLimiting`, `TestTransactionQueueTimeLimitingNoLocals`, `TestTransactionPendingLimiting`, and `TestTransactionReplacement`: existing fixture insufficient-funds failures.
-- `TestTransactionGapFilling`: pending count `0`, expected `1`.
-- `TestStateChangeDuringTransactionPoolReset`: nonce `0`, expected `2`.
-- `TestTransactionMissingNonce`: the same insufficient-funds path and panic on both trees.
+## Verification limits and deployment boundaries
 
-I inspected the paired logs; elapsed times differ as expected, while the failing assertions/messages match. These are pre-existing suite failures, not evidence of a Session Keys regression. They remain a limitation of the repository's broad EOA test gate, so the verdict does not claim the whole repository suite is green.
+The full affected-package regression command remains red. The testing record reports `core.TestFastVsFullChains` and `consensus/clique.TestReimportMirroredState` failing from insufficient GAplo fixture balances; both were run individually on base `0416fd3` and fail with the same cause. Other reported failures are `core/forkid.TestCreation`, `core/forkid.TestValidation`, `core/vm/runtime.TestEVM`, `consensus/ethash.TestDifficultyCalculators`, the sandbox-denied `consensus/ethash.TestRemoteNotify`, and six Ethash/Clique miner worker timeout or receipt tests. Those remaining failures were not individually compared against base. The full `go build ./...` is also reported blocked by unrelated/outdated call sites and imports; `./cmd/geth` builds successfully.
 
-## Explicit boundaries and deployment prerequisites
+Native Session Keys intentionally change fresh genesis identity. An old database whose genesis lacks the registry and canonical GAplo is rejected at startup; there is no migration, and this work did not delete or modify user data directories. No production activation height, public-network transition, or final public genesis hash has been selected or verified. Registry funds explicitly allocated as native dust remain trapped at the reserved address. Operators must provide canonical GAplo in genesis and use a fresh disposable devnet for this native protocol; broader network rollout needs its own reviewed genesis and migration plan.
 
-- No production activation height or live chain state was selected or validated. At the chosen height, the parent state must have no code or storage at `0x1237` and must contain the exact canonical `params.GAPLO` runtime at `0x1234`. The implementation fails closed on conflicts; it does not migrate or overwrite an existing registry or a noncanonical GAplo deployment. Governance/operators must establish these facts before scheduling activation.
-- The proof replay domain is the effective chain ID, switching to `ChainID_ALT` after the existing EthPoW fork. It is not a unique genesis/network identifier. Networks deliberately sharing a chain ID retain the same replay exposure as EIP-155 transactions; add a configured genesis/network salt if the product requires clone-network separation.
-- Recipient rewriting is intentionally limited to native APLO and the enumerated canonical GAplo recipient paths. Other token balances remain at their original addresses and require application-level migration or support.
-- The refreshed `docs/session-keys-review.md` and `docs/session-keys-testing.md` both identify the same `b122…` production source manifest and record the later Beacon finalizer fix. They are aligned with this final review; prior interim notes are superseded.
-
-Within these boundaries, the frozen implementation meets the reviewed security and consensus invariants. The deployment prerequisites are deliberate and visible failure conditions, not silent migrations.
+For the implementation contract and broader test record, see [session-keys.md](session-keys.md) and [session-keys-testing.md](session-keys-testing.md).

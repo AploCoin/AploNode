@@ -1,77 +1,66 @@
 # Session Keys test record
 
-This record covers the independent tests in `builtin/sessionkeys/registry_sessionkeys_independent_test.go` and `core/sessionkeys_protocol_independent_test.go`, plus the canonical-chain test in `core/sessionkeys_chain_test.go`. The tests exercise the registry API and real signed EVM/block-processing paths; they do not replace the repository's broader client, import, RPC, transaction-pool, or mining checks.
+This record covers the permanent, native Session Keys protocol. The final source commit is `9b62907f381f1991bff2b87183635c047fd715a7`; its 17-file production-source manifest hashes to `75b6ec800698eb081bbcdade46be026fa9f170d955e55b19b90570b44835ece9`, using `path || NUL || file bytes || NUL` over the sorted paths in `docs/session-keys-production-manifest.txt`. The final commit changes only an inline comment in `core/state_transition.go`; it does not alter executable code or tests. The Session Keys race, fuzz, CLI smoke, and broader checks below were run against code commit `68515adb5023625f1238f09bd623debeccd23c52` and production manifest `bf7cae691649430094bddf1fd829f4d0235016e588387a111c97500847418086`, before that comment-only follow-up. The focused suite was rerun against the final source commit.
 
-## Environment and baseline
+## Environment
 
-The checkout was tested with Go 1.20.14 from `/private/tmp/aplo-toolchain/go/bin/go`; the baseline archive was made from commit `0416fd355f53f0d09b256e194d4f44f9bb91663e`. Commands below use the task-local module and build caches:
+The checks used Go 1.20.14 at `/private/tmp/aplo-toolchain/go/bin/go`, with `GOPATH=/private/tmp/aplo-go-work` and `GOCACHE=/private/tmp/aplo-go-cache`.
 
-```sh
-export PATH=/private/tmp/aplo-toolchain/go/bin:$PATH
-export GOPATH=/private/tmp/aplo-go-work
-export GOCACHE=/private/tmp/aplo-go-cache
-```
+## Coverage
 
-The final tested production-source manifest SHA-256 is `b122130481661ff7a6be1058eaca61281ff28b116593181b1c06cb2271c9302c`. It hashes the sorted changed/new non-test Go source paths and contents as `path || NUL || file bytes || NUL`.
+- Native genesis handling installs the reserved registry account and canonical GAplo runtime through `ToBlock`, `Commit`, and `SetupGenesisBlock`, without mutating caller allocations. Tests reject account/runtime collisions, invalid protected signing domains, historical presets without block-zero EIP155, and developer faucet addresses reserved for protocol or precompile use.
+- Existing data handling rejects legacy genesis without native accounts and proves no database writes occur. `CommitGenesisState` recovery is checked after dropping trie state, including the known default-genesis missing-spec fallback. Tampered normalized and legacy allocation specifications are rejected without migration or writes.
+- Registry authorization and lifecycle cover proof-of-possession binding to owner, session key, target, selectors, APLO and GAplo budgets, expiry, and chain ID. Forged, empty, truncated, high-`s`, wrong-owner, wrong-chain, and mutated-payload proofs are rejected. Tests also cover nil, negative, and over-uint256 chain domains in direct registry dispatch, proof verification, and EVM dispatch, with unchanged state on rejection.
+- Registry accounting and lifecycle cover exact selectors, short calldata, nonce separation, budget accounting, inclusive expiry, overflow boundaries, selector/session/bucket caps, revoke cleanup, permanent no-reuse markers, and owner/expiry indexes. Public ABI registration at the 32-selector cap is exercised.
+- Signed execution verifies owner `tx.origin` and session-key top-level caller, separate native APLO value and GAplo fee balances, invalid-state preservation, replay rejection, missing funds, and actual fee charging with value rollback on revert or out-of-gas. Maximum session nonce rejection preserves budgets and funds. Session-triggered `CREATE` verifies constructor context.
+- Nested calls cannot use owner `tx.origin` to create or revoke; CALL, CALLCODE, DELEGATECALL, and STATICCALL contexts are exercised. Native APLO and canonical GAplo value through internal `CALL` and `SELFDESTRUCT` routes redirect to the owner, including after expiry or revocation.
+- Malformed GAplo recipient ABI words with nonzero high address padding are tested on canonical `transfer`, approved `transferFrom`, and root-only `refund` calls. Each has a valid-address control that redirects to the owner; the malformed version must revert without changing state or crediting the owner or session key.
+- Lifecycle parity covers same-block create/use/revoke ordering, cleanup after execution, processor/import versus consensus `FinalizeAndAssemble` state-root parity, branch isolation, trie commit/reopen, and transaction-pool owner funding, cumulative pending budgets, replacement, and reorg-prefix behavior.
+- RPC coverage exercises signed `eth_call`/`estimateGas` simulation. `TestSessionKeysInsertChainReorgAndRestart` imports actual branches through `BlockChain.InsertChain`, reorgs between use and revoke branches, then stops and reopens the chain to verify canonical state and balances. A regular EOA identity regression is included.
+- The registry fuzz property checks that rejected arbitrary ABI input does not mutate state.
 
-The narrow baseline command `go test ./builtin/... ./core/types ./core/state ./params ./internal/ethapi` passed. The broad baseline command `go test ./builtin/... ./core/... ./params/... ./consensus/... ./miner/... ./internal/ethapi/...` was not green before the Session Keys changes: the base had missing `params.MainnetGenesisHash`-family declarations, an old `Filter` call signature, a miner mock missing `GetBlockByNumber`, and existing runtime/consensus failures. The baseline is therefore useful for identifying pre-existing failures, but not as an all-green gate.
+## Focused verification
 
-## Independent coverage
-
-- Registry accounting and lifecycle: owner/session nonce separation, exact selector and target checks, short calldata rejection, APLO and GAplo allowance accounting, inclusive expiry, maximum lifetime, `uint64` overflow, selector uniqueness, owner and expiry-bucket caps, revoke cleanup, and permanent no-reuse markers.
-- Registry index property: deterministic 60-session creation/revocation/expiry sequences verify owner and expiry-bucket counts and both swap-and-pop indexes after each operation.
-- Registry ABI and adversarial access: canonical ABI encodings, insufficient gas, view-only behavior, non-owner revoke rejection, the public 32-selector maximum and rejection of a validly signed 33-selector request, and real nested EVM `CALL` attempts to create or revoke with `tx.origin` set to the owner. The create attempt carries a valid session-key proof bound to the EOA origin; the nested call must still fail because the immediate caller is a contract.
-- Chain configuration: fork defaults off, activation boundary and order checks, active primary signing-chain-ID lock including pre-EIP158 configurations, and `ChainID_ALT` locking at the later of Session Keys and EthPoW activation.
-- Proof of possession: an attacker cannot register a known victim EOA session address with their own signature; the test also rejects proofs bound to a different owner, chain ID, target, selector set, APLO budget, GAplo budget, or expiry, plus empty, high-`s`, and truncated signatures. Every rejected attempt preserves the state root, leaves the key unused, and leaves its incoming-credit recipient unchanged. The actual session private key can register the same address and enable owner redirection.
-- Signed execution: `tx.origin` owner and top-level `msg.sender` session key, independent native APLO value and GAplo fee balances, protected-chain-ID mismatch, replay rejection, missing owner APLO/GAplo funds, target/selector/budget rejection without mutation, and reverted/OOG execution charging the actual GAplo fee while reverting the native value transfer.
-- EVM creation: a session transaction invokes `CREATE`; the constructor sees the owner as `tx.origin` and the creating target contract as `msg.sender`. A signed max-nonce session transaction must fail with `ErrNonceMax` without changing nonce, fees, or allowances.
-- Value routes: native APLO transfer from the owner's balance through the APLO builtin, incoming native APLO through an internal `CALL` and `SELFDESTRUCT`, and canonical GAplo transfer to a session address.
-- Block lifecycle: `StateProcessor` applies owner create → session use at its inclusive expiry block → owner revoke in transaction order; consensus finalization expires the exact block bucket after execution. A second block verifies that an expired key's permanent mapping still redirects native incoming value to its owner. Independent parity tests start from copied identical state, apply the same signed inclusive-expiry transaction through `StateProcessor.Process` and through signed application plus real Ethash `FinalizeAndAssemble`, then compare the assembled, miner-state, and import-state roots and post-cleanup indexes.
-- Persistence and branch state: alternative `StateDB` block branches remain isolated, and both active and revoked registry state survive trie commit and reopen with their owner index and tombstone.
-- Canonical chain reorganization and restart: `TestSessionKeysInsertChainReorgAndRestart` imports a register/use branch, reorgs to a longer register/revoke branch, reorgs back to a longer register/use branch, then stops and reopens `BlockChain`. It checks the canonical session nonce and remaining budgets, owner/target balances, revocation tombstone, and restored state after restart.
-- Fuzz property: rejected arbitrary ABI inputs must leave the registry state root unchanged.
-
-The independent branch-isolation test uses `StateDB.Copy` plus independent `StateProcessor.Process` calls and state trie commit/reopen. The separate `TestSessionKeysInsertChainReorgAndRestart` covers canonical `BlockChain.InsertChain` fork choice and full blockchain stop/reopen.
-
-## Commands and current results
-
-Focused Session Keys package sweep, including the proof-of-possession, miner/import parity, and actual canonical-chain reorg/restart checks:
+The Session Keys package sweep passed on both the tested code commit and final source commit:
 
 ```sh
 go test ./builtin/... ./core ./params ./internal/ethapi ./consensus/ethash ./consensus/clique ./consensus/beacon ./miner -run 'SessionKeys' -count=1
 ```
 
-Result after the final config-domain change: all listed packages passed; session-key tests passed in `builtin/sessionkeys`, `core`, `params`, and `internal/ethapi`. The InsertChain test also passed independently with `go test ./core -run '^TestSessionKeysInsertChainReorgAndRestart$' -count=1 -v`.
-
-Full `params` package tests passed separately with `go test ./params/... -count=1`, including `TestSessionKeysSigningDomainCompatibility`.
-
-Race-enabled focused suite:
+The full `params` package suite passed with `go test ./params/... -count=1`. Race-enabled Session Keys tests passed across the registry, core, RPC, and params packages:
 
 ```sh
-go test -race ./builtin/sessionkeys ./core -run 'SessionKeys' -count=1
+go test -race ./builtin/sessionkeys ./core ./internal/ethapi ./params \
+  -run 'SessionKeys|RegistrySessionKeys' -count=1
 ```
 
-Result after the final config-domain change: `builtin/sessionkeys`, `core`, `internal/ethapi`, and `params` all passed with `go test -race ./builtin/sessionkeys ./core ./internal/ethapi ./params -run 'SessionKeys' -count=1`, including the canonical InsertChain reorg/restart case.
+The real canonical-chain reorg/restart test passed independently:
 
-Bounded fuzz run:
+```sh
+go test ./core -run '^TestSessionKeysInsertChainReorgAndRestart$' -count=1 -v
+```
+
+The bounded registry fuzz run on code commit `68515adb5023625f1238f09bd623debeccd23c52` completed 167,730 executions in about 10 seconds, found one additional interesting input, and reported no failure:
 
 ```sh
 GOMAXPROCS=2 go test ./builtin/sessionkeys -run '^$' \
   -fuzz '^FuzzSessionKeysRunCanonicalABIIndependent$' -fuzztime=10s -parallel=2
 ```
 
-Result: completed in 11.2 seconds with 127,066 executions, seven new interesting inputs, and no failure. This run followed the PoP implementation and preceded only the final `params/config.go` signing-domain compatibility change; registry production code and the fuzz target did not change afterward.
+`go build ./cmd/geth`, `gofmt` on the Session Keys test files, and `git diff --check` succeeded. The repository `./console` tests passed after the faucet fixture was changed to an ordinary EOA. A native CLI smoke test at `/private/tmp/aplo-native-smoke-5oi7osyc/summary.json` reports generated-genesis initialization, offline protected signing, and a `--dev` first ordinary transaction all passing; it observes registry nonce 1, receipt status `0x1`, block 1, and 21,000 gas.
 
-An earlier broad current-tree run was:
+The complete `go build ./...` still fails in unrelated or outdated repository code: `tests/state_test_util.go` uses the old five-argument `vm.NewEVM` call; `cmd/devp2p` and `mobile` refer to removed `params.RinkebyBootnodes`/`params.MainnetBootnodes`; and `cmd/faucet/faucet.go` has an unused `cmd/utils` import. The `cmd/geth` build and native smoke are separate successful checks.
+
+## Broader regression results and limits
+
+The full affected-package command was run against the tested commit:
 
 ```sh
 go test ./builtin/... ./core/... ./params/... ./consensus/... ./miner/... ./internal/ethapi/...
 ```
 
-It passed `builtin/sessionkeys`, `core/state`, `core/state/snapshot`, `core/types`, `core/vm`, `params`, `consensus/beacon`, `consensus/misc`, and `internal/ethapi`. It failed in existing or broader repository tests: `core.TestFastVsFullChains` and `consensus/clique.TestReimportMirroredState` panic on insufficient APLO funds; `core/forkid.TestCreation` and `TestValidation` report fork-ID mismatches; `core/vm/runtime.TestEVM` panics; `consensus/ethash.TestDifficultyCalculators` reports a difficulty mismatch; `consensus/ethash.TestRemoteNotify` cannot bind a localhost listener in this sandbox; and several `miner` worker tests time out or report receipt-number mismatches. These failures are reported separately from the focused Session Keys suite.
+It remains unsuccessful. `core.TestFastVsFullChains` and `consensus/clique.TestReimportMirroredState` fail because their signed test transactions have APLO but no GAplo fee balance. I ran each against the clean base archive at `/private/tmp/aplo-baseline` (base `0416fd355f53f0d09b256e194d4f44f9bb91663e`); both fail there with the same insufficient-GAplo-fixture cause. The repair, snapshot, and genesis tests that initially lacked a native genesis trie now pass after their generator fixtures were seeded with that genesis state.
 
-The focused fork-ID boundary check passed with `go test ./core/forkid -run '^TestSessionKeysForkIDBoundary$' -count=1 -v`. It verifies that block 7 is advertised as the next fork before activation and enters the fork checksum at and after activation. The complete legacy `forkid` suite still fails on both the base archive and current tree. After adding only the missing legacy genesis-hash declarations needed to compile the baseline package, the 64 assertion diagnostics from `TestCreation` and `TestValidation` were byte-identical between `/private/tmp/aplo-forkid-baseline.log` and `/private/tmp/aplo-forkid-current.log`; the extracted assertion lines have SHA-256 `99b01dc683c4b9778553c6690b057d77257ca220ba0531d8ae6d95f213f21c27`. This corrects the earlier limitation: the package could be compared after the compile-only baseline repair, and its remaining full-suite failures match the baseline.
+Remaining current broad failures are `core/forkid.TestCreation` and `TestValidation` fork-ID mismatches; `core/vm/runtime.TestEVM` nil-pointer panic; `consensus/ethash.TestDifficultyCalculators` mismatch; `consensus/ethash.TestRemoteNotify` denied localhost bind in this sandbox; and six miner worker timeout/receipt failures: `TestGenerateBlockAndImportEthash`, `TestGenerateBlockAndImportClique`, `TestEmptyWorkEthash`, `TestEmptyWorkClique`, `TestRegenerateMiningBlockEthash`, and `TestRegenerateMiningBlockClique`. Those remaining failures were not individually compared against the base in this final run. Successful packages in the broad run included `builtin/sessionkeys`, `core/rawdb`, `core/state`, `core/state/snapshot`, `core/types`, `core/vm`, `params`, `consensus/beacon`, `consensus/misc`, and `internal/ethapi`.
 
-Seven failing transaction-pool tests were run individually against both the base archive and the current tree. Each failed at the same test line with the same assertion or panic, so these do not indicate a Session Keys regression. `TestTransactionQueueTimeLimiting`, `TestTransactionQueueTimeLimitingNoLocals`, `TestTransactionPendingLimiting`, and `TestTransactionReplacement` fail while adding fixtures with `insufficient funds for gas * price + value`; `TestTransactionGapFilling` reports `pending transactions mismatched: have 0, want 1`; `TestStateChangeDuringTransactionPoolReset` reports `Invalid nonce, want 2, got 0`; and `TestTransactionMissingNonce` first reports `didn't expect error insufficient funds for gas * price + value`, then panics on the nil transaction. Baseline logs are under `/private/tmp/aplo-pool-baseline-Test*.log`, with matching current logs under `/private/tmp/aplo-pool-current-Test*.log`. The baseline checkout received only the compile-fixture repairs needed to run these tests (legacy genesis-hash declarations, the obsolete Filter test-call update, and the missing `GetBlockByNumber` mock); production files were unchanged.
-
-This test record establishes a concrete blockchain reorg/restart case, while broader txpool/import/miner/RPC parity and the listed broad-suite failures still require their own clean end-to-end gates.
+The full broad command against the unmodified base archive cannot complete because its old miner test mock lacks `GetBlockByNumber`. The two GAplo funding failures were therefore compared as individual tests. Focused Session Keys, race, fuzz, RPC, consensus, and reorg checks passed, but the complete affected-package regression remains red for the failures listed above.

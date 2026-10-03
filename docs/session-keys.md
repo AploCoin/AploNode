@@ -2,15 +2,23 @@
 
 This implementation follows the three-page `session_keys_design.pdf`. The earlier 17-page concept has conflicting caller semantics. At the top call `msg.sender` is the session signer and `tx.origin` is its owner. Nested calls, proxies and delegatecalls retain ordinary EVM caller semantics. A target whitelist constrains only the top contract and exact four-byte selector. Contracts must not treat `tx.origin` alone as owner authorization.
 
-## Activation and supported assets
+## Native genesis and supported assets
 
-`sessionKeysBlock` is an optional uint64 block height in chain config. Nil disables the feature; no existing network configuration enables it. Changing an imported activation requires rewind under config compatibility checks, and activation requires EIP155. Primary chain ID is locked once sessions activate independently of EIP158; the alternate EthPoW ID is locked once both forks activate. Domain changes require rewind to before their relevant activation. Network fork IDs include the new height through the existing config reflection. The activation parent state must not contain code or storage at 0x1237 and must contain exactly the canonical `params.GAPLO` runtime at 0x1234. Conflicting existing state is rejected, not migrated or overwritten. Production governance must select and verify a height separately.
+Session Keys are a permanent part of Aplo. There is no Session Keys activation field, runtime flag, activation transaction or first-block initializer. `Genesis.ToBlock`, `Genesis.Commit` and `SetupGenesisBlock` use the same allocation normalization: the reserved, code-free registry at 0x1237 has nonce one and empty storage; GAplo at 0x1234 has exactly the canonical `params.GAPLO` runtime. The account nonce keeps the empty registry alive through EIP161. No initialization storage marker is used.
 
-0x1237 is the new registry; 0x1234 GAplo, 0x1235 APLO and 0x1236 oracle remain at existing addresses. An initialized nonempty registry account and an initialization storage marker keep it persistent through EIP161. Expiry is inclusive; finalizers pay rewards and then remove the current absolute-height bucket, so a session is usable in its last block. Revoke removes authorization immediately. Keys cannot be reused or resumed. Permanent used-key owner tombstones redirect later credits and prevent revoked/expired keys from sending ordinary EOA transactions.
+A missing registry/GAplo allocation is supplied automatically without modifying the caller's allocation map. Explicit registry code, storage or a nonce above one is rejected. Explicit GAplo code must match the canonical runtime; token storage requires that runtime to be supplied explicitly. A fresh native genesis requires a nonnegative uint256 chain ID, EIP155 at block zero, and a valid alternate chain ID if the existing EthPoW fork is scheduled. Unrelated historical fork schedules and fork-ID machinery remain intact; Session Keys add no fork-ID height. Historical Ethereum genesis configurations that postpone EIP155 are not supported native Aplo genesis configurations.
+
+Native dust explicitly allocated to the reserved registry is preserved when its nonce is normalized to one; the reserved account cannot act as an ordinary EOA. Do not allocate spendable user funds to it. Ropsten and Rinkeby presets delay EIP155 and are rejected; the supported default Aplo, Goerli and Sepolia presets have new native genesis hashes rather than historical Ethereum identities.
+
+Primary chain ID is immutable once blocks have been imported, independently of EIP158. The existing EthPoW fork selects and locks the alternate domain when it takes effect. State validation is read-only: execution, mining and import reject missing registry/canonical GAplo state instead of creating it. Startup rejects any old database whose genesis lacks these accounts. Genesis-state recovery verifies the persisted allocation against the original header root before writing it. This release intentionally changes fresh genesis identity and provides no old-chain migration. Recreate a disposable devnet using a fresh data directory; retain any needed old data and keys. No code path deletes an existing data directory.
+
+`geth --dev` funds its ordinary EOA faucet separately with APLO and canonical GAplo, so its first protected transaction can pay fees. Reserved faucet addresses are rejected. The example genesis likewise prepares the protocol accounts and funds its owner. 0x1235 APLO and 0x1236 oracle retain their existing addresses.
+
+Expiry is inclusive: finalizers pay rewards and then remove the current absolute-height bucket, so a session is usable in its last block. Revoke removes authorization immediately. Keys cannot be reused or resumed. Permanent used-key owner tombstones redirect later credits and prevent revoked/expired keys from sending ordinary EOA transactions.
 
 Native top value and APLO builtin transfer debit owner funds and the APLO allowance. GAplo transaction fees debit owner GAplo and the separate gas allowance. Native AddBalance covers ordinary transfer, builtin credit, internal CALL, SELFDESTRUCT, fee DAO credit and consensus rewards. Canonical GAplo transfer/transferFrom/refund credit recipients are normalized to owner in EVM CALL dispatch; storage layout and deployed runtime remain intact, so no token-state migration is needed. Root refund authority stays with zero caller. GAplo mining metadata remains attached to the caller; protocol staking multiplier and resulting reward use owner. Rewards/refunds never renew allowances. `balanceOf(session)` reports its actual zero token balance; query the owner for spendable funds.
 
-Other token contracts own their storage; arbitrary ERC20/ERC721 balances are not redirected. Session staking calls retain session caller identity and do not spend owner stake or native funds. Ordinary EOA/native/builtin behavior remains unchanged before the fork. After the fork, native/gas checks are separated and previously ignored fee-contract errors invalidate the transaction atomically; zero-address tips burn instead of attempting prohibited GAplo mint-to-zero. The repository's existing `eth_getBalance` RPC reports GAplo; this patch preserves that API convention. APLO.balanceOf and account state report native APLO.
+Other token contracts own their storage; arbitrary ERC20/ERC721 balances are not redirected. Session staking calls retain session caller identity and do not spend owner stake or native funds. Native APLO and GAplo funding checks are separate for all transactions; fee-contract errors invalidate the transaction atomically; zero-address tips burn instead of attempting prohibited GAplo mint-to-zero. The repository's existing `eth_getBalance` RPC reports GAplo; this patch preserves that API convention. APLO.balanceOf and account state report native APLO.
 
 ## ABI
 
@@ -46,7 +54,6 @@ All registry storage lives in 0x1237 using:
 
 | kind | address / index | value |
 |---|---|---|
-| initialized | registry / 0 | 1 |
 | used | key / 0 | permanent owner tombstone |
 | owner,target | key / 0 | active owner/target |
 | aplo,gaplo | key / 0 | remaining uint256 budgets |
@@ -57,7 +64,7 @@ All registry storage lives in 0x1237 using:
 | bucketCount,bucketList | uint64 expiry encoded as address / ordinal | count / key |
 | bucketIndex | key / 0 | index in expiry packed list |
 
-Packed-list swap removal updates the moved key's index atomically. Expiry/revoke erase active fields and both list entries, retaining tombstone and account nonce. All writes use StateDB storage journaling, trie commit, Copy, Snapshot and Revert. A derived execution fork flag controls native routing and is reset from chain config on EVM construction/reset and finalization; it carries no independent protocol state.
+Packed-list swap removal updates the moved key's index atomically. Expiry/revoke erase active fields and both list entries, retaining tombstone and account nonce. All writes use StateDB storage journaling, trie commit, Copy, Snapshot and Revert. Native recipient routing is unconditional and reads the permanent owner tombstone from trie state.
 
 ## Local example
 
@@ -72,8 +79,6 @@ go build -o /tmp/aplo-geth ./cmd/geth
 go run ./examples/sessionkeys -owner-nonce 0 -block 1 -expiry 100
 ```
 
-The genesis generator activates only the isolated dev chain at zero, uses chain ID 424242, funds the requested owner with native APLO and canonical GAplo (including totalSupply), and deploys a target returning origin/caller. Submit registration using eth_sendRawTransaction and wait for its successful receipt before submitting the session call. Gas/budgets are illustrative dev units. Neither this example nor the implementation chooses a live-network activation or publishes transactions automatically.
+The genesis generator uses chain ID 424242, enables EIP155 at genesis, funds the requested owner with native APLO and canonical GAplo (including totalSupply), and deploys a target returning origin/caller. Submit registration using eth_sendRawTransaction and wait for its successful receipt before submitting the session call. Gas/budgets are illustrative dev units. The example writes an isolated genesis and signs offline; it does not deploy a node or broadcast transactions.
 
 See `session-keys-design.md` for requirement decisions and metering; independent role reports record tested snapshots and any verification limits.
-
-Native dust at 0x1237 cannot prevent activation: existing APLO balance and EOA nonce are preserved. Only an actually empty registry needs nonce=1 to survive EIP161; funded nonce-zero EOAs retain nonce zero. Existing code/storage collisions require a different governed migration and are rejected.
