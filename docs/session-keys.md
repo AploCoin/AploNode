@@ -20,9 +20,19 @@ Native top value and APLO builtin transfer debit owner funds and the APLO allowa
 
 Other token contracts own their storage; arbitrary ERC20/ERC721 balances are not redirected. Session staking calls retain session caller identity and do not spend owner stake or native funds. Native APLO and GAplo funding checks are separate for all transactions; fee-contract errors invalidate the transaction atomically; zero-address tips burn instead of attempting prohibited GAplo mint-to-zero. The repository's existing `eth_getBalance` RPC reports GAplo; this patch preserves that API convention. APLO.balanceOf and account state report native APLO.
 
+## Authorization and execution
+
+A session key is a secp256k1 account address, not an on-chain private key or a second signature attached to every call. Registration needs two authorizations: the owner's replay-protected transaction and the session key's configuration-bound possession proof described below. Subsequent transactions are signed by the session key and recovered with the block's ordinary transaction signer; they use that key's account nonce. The registry supplies the owner, allowed target/selectors, remaining budgets and inclusive expiry. Revocation or expiry removes active authorization while retaining the permanent used-key marker.
+
+At the top-level target, `CALLER` (`msg.sender`) is the session key and `ORIGIN` (`tx.origin`) is its owner. A nested CALL sees its calling contract as sender; DELEGATECALL inherits the current caller. Constructors retain normal EVM context. Neither owner origin nor delegate context grants permission to mutate the registry: create/revoke require depth zero, immediate caller equal to origin, no caller code, no used-session marker and zero value. STATICCALL to the registry only permits the view operation; CALLCODE and DELEGATECALL to the registry are rejected.
+
+The registry cannot own a session, be a session key, or be the session's target. The zero address, precompiles 0x1..0x9, GAplo 0x1234, APLO 0x1235 and oracle 0x1236 cannot be owners or keys either. Only an owner EOA may delegate; a deployed contract account cannot own the delegation. An allowed target may be a contract, including one with administrative methods: the protocol checks the exact top-level target and selector, while that application's authorization checks still determine whether the session caller may perform the action. An application that authorizes solely by `tx.origin` exposes owner authority to its allowed sessions.
+
+These rules are enforced during transaction execution, not only by txpool admission. `StateProcessor.Process` recovers signatures from each imported block and uses the same `applyTransaction`/`ApplyMessage` path as `ApplyTransaction`: protected signatures, native state, nonce, target, selector, expiry, allowances and owner funding are checked before execution. A consensus/precheck-invalid transaction invalidates its block; rejected transaction state and GasPool changes are rolled back. An execution revert, including rejected registry proof/configuration or an application revert, may still be included with a failed receipt, its nonce and actual gas charge. Independent tests cover direct processing, miner parity and actual `InsertChain` import/reorg/restart without relying on pool acceptance.
+
 ## ABI
 
-All state mutations require a direct zero-value EOA-signed transaction. Sessions, nested calls, CALLCODE, DELEGATECALL and STATICCALL cannot create/revoke. `getSession` supports read-only use. Canonical ABI encoding is mandatory.
+Registry mutations require a direct zero-value EOA-signed transaction. Sessions, nested calls, CALLCODE, DELEGATECALL and STATICCALL cannot create/revoke. `getSession` supports read-only use. Canonical ABI encoding is mandatory.
 
 ```
 CreateSessionKey(address key,address target,bytes4[] selectors,
