@@ -1,5 +1,30 @@
 # Session Keys native implementation record
 
+## Reviewer-question follow-up (2026-10-05)
+
+The frozen source/test snapshot for this follow-up is `ed45c62ec6c3cf4827f650378a5911a3d22a398a`. No production Go file changed from `83e121aeaab80bf358641b54946c7f196cba9899`; the 17-file production manifest remains `75b6ec800698eb081bbcdade46be026fa9f170d955e55b19b90570b44835ece9`. Independent review and guard found no confirmed production defect in the requested authorization, EVM-context and consensus paths. The change closes specific coverage and documentation gaps.
+
+`session-keys.md` now explains the account-address representation, owner transaction plus key possession proof, subsequent session signatures/nonces, top-level and nested caller semantics, block processing, registry address restrictions and EOA ownership. Contract targets remain permitted; their own authorization must account for session caller identity and owner origin.
+
+New tests cover:
+
+- Public ABI registration rejects registry owner/target and code-bearing owners with valid possession proofs; an ordinary contract target is accepted. A separate trusted `Create` test exercises the registry-as-key guard, since a matching private-key proof for that fixed address is computationally unavailable.
+- A genuinely signed transaction from an account with code fails `ApplyTransaction` with `ErrSenderNoEOA`, preserving the full state root, owner funds/nonces and registry state.
+- `StateProcessor.Process` rejects unprotected session-sender and direct-registry transactions without state, budget or gas changes. An ordinary unprotected EOA control succeeds with the optional EthPoW rule disabled, isolating the native guard independently of txpool.
+- At the EthPoW boundary, ALT-signed owner registration and session use with an ALT-domain proof succeed through block processing. An ALT-signed registration with a primary-domain proof yields a failed receipt without registering or reserving a key.
+
+The root focused sweep passed on this snapshot using Go 1.20.14 and task-local caches:
+
+```sh
+go test ./builtin/... ./core ./params ./internal/ethapi \
+  ./consensus/ethash ./consensus/clique ./consensus/beacon ./miner \
+  -run SessionKeys -count=1
+```
+
+The consensus and miner packages compile in this sweep but have no tests selected by that pattern; core tests execute the processor/finalizer parity checks. Fresh independent normal, race and real `InsertChain` reorg/restart results are recorded in the role reports. The full suite, fuzz, builds and CLI smoke below are historical evidence and were not rerun for this tests/documentation-only follow-up. Their recorded limits still apply.
+
+## Native implementation snapshot (historical)
+
 Session Keys are a permanent part of Aplo on `master`, based on `0416fd355f53f0d09b256e194d4f44f9bb91663e`. The native code/tests commit is `68515adb5023625f1238f09bd623debeccd23c52`; the final source commit is `9b62907f381f1991bff2b87183635c047fd715a7`. The latter changes one plain comment only; independent byte/diff checks verified that executable code and tests are unchanged. Test and CLI evidence were recorded on the former commit (production digest `bf7cae691649430094bddf1fd829f4d0235016e588387a111c97500847418086`), and final source identity/hygiene were checked after the comment clarification. This record replaces the earlier fork-gated implementation evidence. The new protocol has no activation option, StateDB enable flag, initialization marker or first-transaction migration. It requires a fresh native genesis; no existing user data directory was deleted or migrated.
 
 The production-source SHA-256 is:

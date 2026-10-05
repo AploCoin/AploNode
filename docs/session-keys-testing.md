@@ -1,6 +1,20 @@
 # Session Keys test record
 
-This record covers the permanent, native Session Keys protocol. The final source commit is `9b62907f381f1991bff2b87183635c047fd715a7`; its 17-file production-source manifest hashes to `75b6ec800698eb081bbcdade46be026fa9f170d955e55b19b90570b44835ece9`, using `path || NUL || file bytes || NUL` over the sorted paths in `docs/session-keys-production-manifest.txt`. The final commit changes only an inline comment in `core/state_transition.go`; it does not alter executable code or tests. The Session Keys race, fuzz, CLI smoke, and broader checks below were run against code commit `68515adb5023625f1238f09bd623debeccd23c52` and production manifest `bf7cae691649430094bddf1fd829f4d0235016e588387a111c97500847418086`, before that comment-only follow-up. The focused suite was rerun against the final source commit.
+This record covers the permanent, native Session Keys protocol. The frozen test and source snapshot is `ed45c62ec6c3cf4827f650378a5911a3d22a398a`; its 17-file production-source manifest hashes to `75b6ec800698eb081bbcdade46be026fa9f170d955e55b19b90570b44835ece9`, using `path || NUL || file bytes || NUL` over the sorted paths in `docs/session-keys-production-manifest.txt`. The fresh checks below ran against that snapshot. Older fuzz, CLI smoke, and broader-suite results are retained with their original provenance and are explicitly historical rather than reruns of this snapshot.
+
+## Frozen snapshot verification (2026-10-05)
+
+The manifest was recomputed from all 17 listed production files and matched `75b6ec800698eb081bbcdade46be026fa9f170d955e55b19b90570b44835ece9`. The fresh normal and race-enabled Session Keys sweeps passed, including tests for registry address roles, contract-owner rejection, block-processing signature protection, and the alternate signing domain.
+
+```sh
+go test ./builtin/... ./core ./params ./internal/ethapi ./consensus/ethash ./consensus/clique ./consensus/beacon ./miner -run 'SessionKeys|RegistrySessionKeys' -count=1
+go test -race ./builtin/sessionkeys ./core ./internal/ethapi ./params -run 'SessionKeys|RegistrySessionKeys' -count=1
+go test ./core -run '^TestSessionKeysInsertChainReorgAndRestart$' -count=1 -v
+```
+
+All three commands passed on `ed45c62ec6c3cf4827f650378a5911a3d22a398a`. Consensus and miner packages compiled and reported no matching tests; the core sweep exercised the consensus finalizer parity checks. The actual `BlockChain.InsertChain` reorg/restart test passed separately.
+
+The fuzz run, `geth` build and CLI smoke, and full affected-package regression summarized below were not rerun after this snapshot. Those earlier results remain useful historical evidence, but their outcomes and limitations do not claim verification on `ed45c62ec6c3cf4827f650378a5911a3d22a398a`.
 
 ## Environment
 
@@ -19,9 +33,11 @@ The checks used Go 1.20.14 at `/private/tmp/aplo-toolchain/go/bin/go`, with `GOP
 - RPC coverage exercises signed `eth_call`/`estimateGas` simulation. `TestSessionKeysInsertChainReorgAndRestart` imports actual branches through `BlockChain.InsertChain`, reorgs between use and revoke branches, then stops and reopens the chain to verify canonical state and balances. A regular EOA identity regression is included.
 - The registry fuzz property checks that rejected arbitrary ABI input does not mutate state.
 
-## Focused verification
+## Previously recorded focused verification
 
-The Session Keys package sweep passed on both the tested code commit and final source commit:
+The following records predate frozen snapshot `ed45c62ec6c3cf4827f650378a5911a3d22a398a`. They document checks on tested code commit `68515adb5023625f1238f09bd623debeccd23c52` with production manifest `bf7cae691649430094bddf1fd829f4d0235016e588387a111c97500847418086`, followed by comment-only source commit `9b62907f381f1991bff2b87183635c047fd715a7` with manifest `75b6ec800698eb081bbcdade46be026fa9f170d955e55b19b90570b44835ece9`. That follow-up changes only an inline comment in `core/state_transition.go`; it changes no executable code or tests. Fresh checks on the frozen snapshot are listed above.
+
+The earlier Session Keys package sweep passed on those commits:
 
 ```sh
 go test ./builtin/... ./core ./params ./internal/ethapi ./consensus/ethash ./consensus/clique ./consensus/beacon ./miner -run 'SessionKeys' -count=1
@@ -51,9 +67,9 @@ GOMAXPROCS=2 go test ./builtin/sessionkeys -run '^$' \
 
 The complete `go build ./...` still fails in unrelated or outdated repository code: `tests/state_test_util.go` uses the old five-argument `vm.NewEVM` call; `cmd/devp2p` and `mobile` refer to removed `params.RinkebyBootnodes`/`params.MainnetBootnodes`; and `cmd/faucet/faucet.go` has an unused `cmd/utils` import. The `cmd/geth` build and native smoke are separate successful checks.
 
-## Broader regression results and limits
+## Previously recorded broader regression results and limits
 
-The full affected-package command was run against the tested commit:
+The full affected-package command below was run against tested commit `68515adb5023625f1238f09bd623debeccd23c52`, not the frozen snapshot:
 
 ```sh
 go test ./builtin/... ./core/... ./params/... ./consensus/... ./miner/... ./internal/ethapi/...
