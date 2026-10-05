@@ -247,6 +247,7 @@ type TxPool struct {
 	istanbul bool // Fork indicator whether we are in the istanbul stage.
 	eip2718  bool // Fork indicator whether we are using EIP-2718 type transactions.
 	eip1559  bool // Fork indicator whether we are using EIP-1559 type transactions.
+	ethpow   bool // Pending blocks require the alternate protected signing domain.
 
 	currentState  *state.StateDB // Current state in the blockchain head
 	pendingNonces *txNoncer      // Pending state tracking virtual nonces
@@ -588,6 +589,9 @@ func (pool *TxPool) local() map[common.Address]types.Transactions {
 // validateTx checks whether a transaction is valid according to the consensus
 // rules and adheres to some heuristic limits of the local node (price and size).
 func (pool *TxPool) validateTx(tx *types.Transaction, local bool) error {
+	if pool.ethpow && !tx.Protected() {
+		return ErrInvalidSender
+	}
 	// Accept only legacy transactions until EIP-2718/2930 activates.
 	if !pool.eip2718 && tx.Type() != types.LegacyTxType {
 		return ErrTxTypeNotSupported
@@ -929,6 +933,11 @@ func (pool *TxPool) AddRemote(tx *types.Transaction) error {
 
 // addTxs attempts to queue a batch of transactions if they are valid.
 func (pool *TxPool) addTxs(txs []*types.Transaction, local, sync bool) []error {
+	// Sender recovery runs outside the pool lock; retain one immutable signer
+	// while reset may switch the pending block's signing domain.
+	pool.mu.RLock()
+	signer := pool.signer
+	pool.mu.RUnlock()
 	// Filter out known ones without obtaining the pool lock or recovering signatures
 	var (
 		errs = make([]error, len(txs))
@@ -944,7 +953,7 @@ func (pool *TxPool) addTxs(txs []*types.Transaction, local, sync bool) []error {
 		// Exclude transactions with invalid signatures as soon as
 		// possible and cache senders in transactions before
 		// obtaining lock
-		_, err := types.Sender(pool.signer, tx)
+		_, err := types.Sender(signer, tx)
 		if err != nil {
 			errs[i] = ErrInvalidSender
 			invalidTxMeter.Mark(1)
@@ -1003,8 +1012,8 @@ func (pool *TxPool) Status(hashes []common.Hash) []TxStatus {
 		if tx == nil {
 			continue
 		}
-		from, _ := types.Sender(pool.signer, tx) // already validated
 		pool.mu.RLock()
+		from, _ := types.Sender(pool.signer, tx) // already validated
 		if txList := pool.pending[from]; txList != nil && txList.txs.items[tx.Nonce()] != nil {
 			status[i] = TxStatusPending
 		} else if txList := pool.queue[from]; txList != nil && txList.txs.items[tx.Nonce()] != nil {
@@ -1160,7 +1169,12 @@ func (pool *TxPool) scheduleReorgLoop() {
 		case tx := <-pool.queueTxEventCh:
 			// Queue up the event, but don't schedule a reorg. It's up to the caller to
 			// request one later if they want the events sent.
-			addr, _ := types.Sender(pool.signer, tx)
+			// Events arrive while their producer holds pool.mu. Recover the
+			// already-validated sender without blocking that producer.
+			addr, err := types.Sender(types.LatestSignerForChainID(tx.ChainId()), tx)
+			if err != nil {
+				continue
+			}
 			if _, ok := queuedEvents[addr]; !ok {
 				queuedEvents[addr] = newTxSortedMap()
 			}
@@ -1238,11 +1252,18 @@ func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirt
 
 	dropBetweenReorgHistogram.Update(int64(pool.changesSinceReorg))
 	pool.changesSinceReorg = 0 // Reset change counter
+	for addr, set := range events {
+		set.Filter(func(tx *types.Transaction) bool { return !pool.Has(tx.Hash()) })
+		if set.Len() == 0 {
+			delete(events, addr)
+		}
+	}
+	signer := pool.signer
 	pool.mu.Unlock()
 
 	// Notify subsystems for newly added transactions
 	for _, tx := range promoted {
-		addr, _ := types.Sender(pool.signer, tx)
+		addr, _ := types.Sender(signer, tx)
 		if _, ok := events[addr]; !ok {
 			events[addr] = newTxSortedMap()
 		}
@@ -1335,17 +1356,33 @@ func (pool *TxPool) reset(oldHead, newHead *types.Header) {
 	pool.currentState = statedb
 	pool.pendingNonces = newTxNoncer(statedb)
 	pool.currentMaxGas = newHead.GasLimit
+	next := new(big.Int).Add(newHead.Number, big.NewInt(1))
+	signer := types.MakeSigner(pool.chainconfig, next)
+	ethpow := pool.chainconfig.IsEthPoWFork(next)
+	if !signer.Equal(pool.signer) || ethpow != pool.ethpow {
+		var drops []common.Hash
+		pool.all.Range(func(hash common.Hash, tx *types.Transaction, _ bool) bool {
+			if _, err := types.Sender(signer, tx); err != nil || (ethpow && !tx.Protected()) {
+				drops = append(drops, hash)
+			}
+			return true
+		}, true, true)
+		// Remove with the old signer, which still recovers their account lanes.
+		for _, hash := range drops {
+			pool.removeTx(hash, true)
+		}
+	}
+	pool.signer = signer
+	pool.locals.signer = signer
+	pool.ethpow = ethpow
+	pool.istanbul = pool.chainconfig.IsIstanbul(next)
+	pool.eip2718 = pool.chainconfig.IsBerlin(next)
+	pool.eip1559 = pool.chainconfig.IsLondon(next)
 
 	// Inject any transactions discarded due to reorgs
 	log.Debug("Reinjecting stale transactions", "count", len(reinject))
 	senderCacher.recover(pool.signer, reinject)
 	pool.addTxsLocked(reinject, false)
-
-	// Update all fork indicator by next pending block number.
-	next := new(big.Int).Add(newHead.Number, big.NewInt(1))
-	pool.istanbul = pool.chainconfig.IsIstanbul(next)
-	pool.eip2718 = pool.chainconfig.IsBerlin(next)
-	pool.eip1559 = pool.chainconfig.IsLondon(next)
 }
 
 // promoteExecutables moves transactions that have become processable from the
