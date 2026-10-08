@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math/big"
 
+	"github.com/ethereum/go-ethereum/builtin/sessionkeys"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -156,6 +157,8 @@ var fnGetMultiplier types.Function = func(_ types.Blockchain, state types.StateD
 
 // ─── state-mutating functions ─────────────────────────────────────────────────
 
+// fnTransfer implements transfer(address,uint256) for native APLO.
+// Session transfers debit the owner and charge the separate native allowance.
 var fnTransfer types.Function = func(_ types.Blockchain, state types.StateDB, from types.ContractRef, input []byte, gas uint64) ([]byte, uint64, error) {
 	if len(input) != 68 || gas < 25000 {
 		return nil, gas / 2, errors.New("execution reverted")
@@ -165,15 +168,27 @@ var fnTransfer types.Function = func(_ types.Blockchain, state types.StateDB, fr
 	amount := input[36:68]
 	amountInt := new(big.Int).SetBytes(amount)
 
-	if state.GetBalance(from.Address()).Cmp(amountInt) < 0 {
+	payer := from.Address()
+	toAddr = sessionkeys.Recipient(state, toAddr)
+	to = common.LeftPadBytes(toAddr.Bytes(), 32)
+	session := sessionkeys.Get(state, from.Address())
+	if session != nil {
+		payer = session.Owner
+		if session.AploSpent.Cmp(amountInt) < 0 {
+			return nil, gas / 2, errors.New("execution reverted")
+		}
+	}
+	if state.GetBalance(payer).Cmp(amountInt) < 0 {
 		return nil, gas / 2, errors.New("execution reverted")
 	}
-
-	state.SubBalance(from.Address(), amountInt)
+	state.SubBalance(payer, amountInt)
+	if session != nil {
+		sessionkeys.Charge(state, from.Address(), amountInt, new(big.Int))
+	}
 	state.AddBalance(toAddr, amountInt)
 
 	eventTopic := [32]byte{221, 242, 82, 173, 27, 226, 200, 155, 105, 194, 176, 104, 252, 55, 141, 170, 149, 43, 167, 241, 99, 196, 161, 22, 40, 245, 90, 77, 245, 35, 179, 239}
-	fromTopic := (*common.Hash)(common.LeftPadBytes(from.Address().Bytes(), 32))
+	fromTopic := (*common.Hash)(common.LeftPadBytes(payer.Bytes(), 32))
 	toTopic := (*common.Hash)(to)
 	state.AddLog(&types.Log{
 		Address: contractAddr,

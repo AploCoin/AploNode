@@ -24,6 +24,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/ethereum/go-ethereum/builtin/sessionkeys"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/snapshot"
@@ -378,7 +379,9 @@ func (s *StateDB) HasSuicided(addr common.Address) bool {
  */
 
 // AddBalance adds amount to the account associated with addr.
+// Registered session keys always credit their permanent owner.
 func (s *StateDB) AddBalance(addr common.Address, amount *big.Int) {
+	addr = sessionkeys.Recipient(s, addr)
 	stateObject := s.GetOrNewStateObject(addr)
 	if stateObject != nil {
 		stateObject.AddBalance(amount)

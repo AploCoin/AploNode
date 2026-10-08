@@ -79,6 +79,9 @@ func (basic *snapshotTestBasic) prepare(t *testing.T) (*BlockChain, []*types.Blo
 	if err != nil {
 		t.Fatalf("Failed to create chain: %v", err)
 	}
+	// Native protocol accounts make genesis state nonempty. Seed the isolated
+	// generator database with the same genesis before extending its root.
+	(&Genesis{BaseFee: big.NewInt(params.InitialBaseFee)}).MustCommit(gendb)
 	blocks, _ := GenerateChain(params.TestChainConfig, genesis, engine, gendb, basic.chainBlocks, func(i int, b *BlockGen) {})
 
 	// Insert the blocks with configured settings.

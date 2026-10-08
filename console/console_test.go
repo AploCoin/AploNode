@@ -90,12 +90,15 @@ func newTester(t *testing.T, confOverride func(*ethconfig.Config)) *tester {
 	workspace := t.TempDir()
 
 	// Create a networkless protocol stack and start an Ethereum service within
-	stack, err := node.New(&node.Config{DataDir: workspace, UseLightweightKDF: true, Name: testInstance})
+	stackConfig := &node.Config{DataDir: workspace, UseLightweightKDF: true, Name: testInstance}
+	stackConfig.P2P.NoDiscovery = true
+	stackConfig.P2P.NoDial = true
+	stack, err := node.New(stackConfig)
 	if err != nil {
 		t.Fatalf("failed to create node: %v", err)
 	}
 	ethConf := &ethconfig.Config{
-		Genesis: core.DeveloperGenesisBlock(15, 11_500_000, common.Address{}),
+		Genesis: core.DeveloperGenesisBlock(15, 11_500_000, common.HexToAddress(testAddress)),
 		Miner: miner.Config{
 			Etherbase: common.HexToAddress(testAddress),
 		},

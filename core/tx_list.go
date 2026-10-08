@@ -331,7 +331,7 @@ func (l *txList) Forward(threshold uint64) types.Transactions {
 // the newly invalidated transactions.
 func (l *txList) Filter(aploBalance *big.Int, gaploBalance *big.Int, gasLimit uint64) (types.Transactions, types.Transactions) {
 	// If all transactions are below the threshold, short circuit
-	if l.costcap.Cmp(gaploBalance) <= 0 && l.gascap <= gasLimit {
+	if l.costcap.Cmp(gaploBalance) <= 0 && l.costcap.Cmp(aploBalance) <= 0 && l.gascap <= gasLimit {
 		return nil, nil
 	}
 	l.costcap = new(big.Int).Set(gaploBalance) // Lower the caps to the thresholds
@@ -339,7 +339,8 @@ func (l *txList) Filter(aploBalance *big.Int, gaploBalance *big.Int, gasLimit ui
 
 	// Filter out all the transactions above the account's funds
 	removed := l.txs.Filter(func(tx *types.Transaction) bool {
-		return tx.Gas() > gasLimit || tx.Value().Cmp(aploBalance) > 0 || new(big.Int).SetUint64(tx.Gas()).Cmp(gaploBalance) > 0
+		return tx.Gas() > gasLimit || tx.Value().Cmp(aploBalance) > 0 ||
+			new(big.Int).Mul(new(big.Int).SetUint64(tx.Gas()), tx.GasFeeCap()).Cmp(gaploBalance) > 0
 	})
 
 	if len(removed) == 0 {
@@ -354,7 +355,9 @@ func (l *txList) Filter(aploBalance *big.Int, gaploBalance *big.Int, gasLimit ui
 				lowest = nonce
 			}
 		}
-		invalids = l.txs.filter(func(tx *types.Transaction) bool { return tx.Nonce() > lowest })
+		invalids = l.txs.filter(func(tx *types.Transaction) bool {
+			return tx.Nonce() > lowest
+		})
 	}
 	l.txs.reheap()
 	return removed, invalids
@@ -632,4 +635,26 @@ func (l *txPricedList) Reheap() {
 func (l *txPricedList) SetBaseFee(baseFee *big.Int) {
 	l.urgent.baseFee = baseFee
 	l.Reheap()
+}
+
+// FilterSession removes transactions whose delegation policy was revoked or
+// changed by a head update, preserving strict nonce dependencies.
+func (l *txList) FilterSession(valid func(*types.Transaction) bool) (types.Transactions, types.Transactions) {
+	removed := l.txs.Filter(func(tx *types.Transaction) bool {
+		return !valid(tx)
+	})
+	var invalids types.Transactions
+	if l.strict && len(removed) > 0 {
+		lowest := uint64(math.MaxUint64)
+		for _, tx := range removed {
+			if tx.Nonce() < lowest {
+				lowest = tx.Nonce()
+			}
+		}
+		invalids = l.txs.filter(func(tx *types.Transaction) bool {
+			return tx.Nonce() > lowest
+		})
+		l.txs.reheap()
+	}
+	return removed, invalids
 }

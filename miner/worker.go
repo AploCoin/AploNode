@@ -25,6 +25,7 @@ import (
 	"time"
 
 	mapset "github.com/deckarep/golang-set"
+	"github.com/ethereum/go-ethereum/builtin/sessionkeys"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/misc"
@@ -1027,6 +1028,10 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 	env, err := w.makeEnv(parent, header, genParams.coinbase)
 	if err != nil {
 		log.Error("Failed to create sealing context", "err", err)
+		return nil, err
+	}
+	// Require native genesis accounts even when sealing an empty block.
+	if err := sessionkeys.ValidateState(env.state); err != nil {
 		return nil, err
 	}
 	// Accumulate the uncles for the sealing work only if it's allowed.

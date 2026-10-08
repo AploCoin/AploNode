@@ -39,17 +39,25 @@ func TestInvalidCliqueConfig(t *testing.T) {
 }
 
 func TestSetupGenesis(t *testing.T) {
+	customConfig := *params.TestChainConfig
+	customConfig.BerlinBlock = big.NewInt(3)
+	customConfig.LondonBlock, customConfig.ArrowGlacierBlock, customConfig.GrayGlacierBlock = nil, nil, nil
+	oldConfig := customConfig
+	oldConfig.BerlinBlock = big.NewInt(2)
 	var (
-		customghash = common.HexToHash("0x89c99d90b79719238d2645c7642f2c9295246e80775b38cfd162b696817fbd50")
+		customghash common.Hash
 		customg     = Genesis{
-			Config: &params.ChainConfig{HomesteadBlock: big.NewInt(3)},
+			Config: &customConfig,
 			Alloc: GenesisAlloc{
 				{1}: {Balance: big.NewInt(1), Storage: map[common.Hash]common.Hash{{1}: {1}}},
 			},
 		}
 		oldcustomg = customg
 	)
-	oldcustomg.Config = &params.ChainConfig{HomesteadBlock: big.NewInt(2)}
+	oldcustomg.Config = &oldConfig
+	customghash = customg.ToBlock().Hash()
+	nativeMainnetHash := DefaultGenesisBlock().ToBlock().Hash()
+	nativeSepoliaHash := DefaultSepoliaGenesisBlock().ToBlock().Hash()
 	tests := []struct {
 		name       string
 		fn         func(ethdb.Database) (*params.ChainConfig, common.Hash, error)
@@ -70,7 +78,7 @@ func TestSetupGenesis(t *testing.T) {
 			fn: func(db ethdb.Database) (*params.ChainConfig, common.Hash, error) {
 				return SetupGenesisBlock(db, nil)
 			},
-			wantHash:   params.MainnetGenesisHash,
+			wantHash:   nativeMainnetHash,
 			wantConfig: params.MainnetChainConfig,
 		},
 		{
@@ -79,7 +87,7 @@ func TestSetupGenesis(t *testing.T) {
 				DefaultGenesisBlock().MustCommit(db)
 				return SetupGenesisBlock(db, nil)
 			},
-			wantHash:   params.MainnetGenesisHash,
+			wantHash:   nativeMainnetHash,
 			wantConfig: params.MainnetChainConfig,
 		},
 		{
@@ -92,14 +100,14 @@ func TestSetupGenesis(t *testing.T) {
 			wantConfig: customg.Config,
 		},
 		{
-			name: "custom block in DB, genesis == ropsten",
+			name: "custom block in DB, genesis == sepolia",
 			fn: func(db ethdb.Database) (*params.ChainConfig, common.Hash, error) {
 				customg.MustCommit(db)
-				return SetupGenesisBlock(db, DefaultRopstenGenesisBlock())
+				return SetupGenesisBlock(db, DefaultSepoliaGenesisBlock())
 			},
-			wantErr:    &GenesisMismatchError{Stored: customghash, New: params.RopstenGenesisHash},
-			wantHash:   params.RopstenGenesisHash,
-			wantConfig: params.RopstenChainConfig,
+			wantErr:    &GenesisMismatchError{Stored: customghash, New: nativeSepoliaHash},
+			wantHash:   nativeSepoliaHash,
+			wantConfig: params.SepoliaChainConfig,
 		},
 		{
 			name: "compatible config in DB",
@@ -113,8 +121,8 @@ func TestSetupGenesis(t *testing.T) {
 		{
 			name: "incompatible config in DB",
 			fn: func(db ethdb.Database) (*params.ChainConfig, common.Hash, error) {
-				// Commit the 'old' genesis block with Homestead transition at #2.
-				// Advance to block #4, past the homestead transition block of customg.
+				// Commit the 'old' genesis block with Berlin transition at #2.
+				// Advance to block #4, past the Berlin transition block of customg.
 				genesis := oldcustomg.MustCommit(db)
 
 				bc, _ := NewBlockChain(db, nil, oldcustomg.Config, ethash.NewFullFaker(), vm.Config{}, nil, nil)
@@ -129,7 +137,7 @@ func TestSetupGenesis(t *testing.T) {
 			wantHash:   customghash,
 			wantConfig: customg.Config,
 			wantErr: &params.ConfigCompatError{
-				What:         "Homestead fork block",
+				What:         "Berlin fork block",
 				StoredConfig: big.NewInt(2),
 				NewConfig:    big.NewInt(3),
 				RewindTo:     1,
@@ -160,18 +168,16 @@ func TestSetupGenesis(t *testing.T) {
 	}
 }
 
-// TestGenesisHashes checks the congruity of default genesis data to
-// corresponding hardcoded genesis hash values.
+// TestGenesisHashes fixes the identity of supported native genesis presets.
+// Historical Ethereum network hashes remain separate reference constants.
 func TestGenesisHashes(t *testing.T) {
 	for i, c := range []struct {
 		genesis *Genesis
 		want    common.Hash
 	}{
-		{DefaultGenesisBlock(), params.MainnetGenesisHash},
-		{DefaultGoerliGenesisBlock(), params.GoerliGenesisHash},
-		{DefaultRopstenGenesisBlock(), params.RopstenGenesisHash},
-		{DefaultRinkebyGenesisBlock(), params.RinkebyGenesisHash},
-		{DefaultSepoliaGenesisBlock(), params.SepoliaGenesisHash},
+		{DefaultGenesisBlock(), common.HexToHash("0xb04edc268437dfdee300fb882450d14529be52e2f122b917627d7b05b2dd74fc")},
+		{DefaultGoerliGenesisBlock(), common.HexToHash("0x3b1bb817eabc4905049a26b727e0f09579ab790a2d6f923db783b18d0a79d55c")},
+		{DefaultSepoliaGenesisBlock(), common.HexToHash("0x0d5ea79938f5159275fbc6a2163683be32e9f3f6b1dca669f437d96bf9caf7fe")},
 	} {
 		// Test via MustCommit
 		if have := c.genesis.MustCommit(rawdb.NewMemoryDatabase()).Hash(); have != c.want {
@@ -180,6 +186,19 @@ func TestGenesisHashes(t *testing.T) {
 		// Test via ToBlock
 		if have := c.genesis.ToBlock().Hash(); have != c.want {
 			t.Errorf("case: %d a), want: %s, got: %s", i, c.want.Hex(), have.Hex())
+		}
+	}
+}
+
+// Historic presets that postpone EIP155 cannot initialize a native Aplo chain.
+func TestGenesisRejectsHistoricalUnprotectedPresets(t *testing.T) {
+	for _, genesis := range []*Genesis{DefaultRopstenGenesisBlock(), DefaultRinkebyGenesisBlock()} {
+		db := rawdb.NewMemoryDatabase()
+		if _, err := genesis.Commit(db); err == nil {
+			t.Fatal("historical preset without genesis replay protection was accepted")
+		}
+		if hash := rawdb.ReadCanonicalHash(db, 0); hash != (common.Hash{}) {
+			t.Fatalf("invalid native preset wrote genesis %s", hash)
 		}
 	}
 }
@@ -214,8 +233,10 @@ func TestReadWriteGenesisAlloc(t *testing.T) {
 	var (
 		db    = rawdb.NewMemoryDatabase()
 		alloc = &GenesisAlloc{
-			{1}: {Balance: big.NewInt(1), Storage: map[common.Hash]common.Hash{{1}: {1}}},
-			{2}: {Balance: big.NewInt(2), Storage: map[common.Hash]common.Hash{{2}: {2}}},
+			common.HexToAddress("0x1237"): {Nonce: 1, Balance: new(big.Int)},
+			params.GAploContractAddress:   {Code: common.FromHex(params.GAPLO), Balance: new(big.Int)},
+			{1}:                           {Balance: big.NewInt(1), Storage: map[common.Hash]common.Hash{{1}: {1}}},
+			{2}:                           {Balance: big.NewInt(2), Storage: map[common.Hash]common.Hash{{2}: {2}}},
 		}
 		hash, _ = alloc.deriveHash()
 	)

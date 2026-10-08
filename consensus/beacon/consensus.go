@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/ethereum/go-ethereum/builtin/sessionkeys"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/misc"
@@ -350,7 +351,13 @@ func (beacon *Beacon) Finalize(chain consensus.ChainHeaderReader, header *types.
 		beacon.ethone.Finalize(chain, header, state, txs, uncles)
 		return
 	}
+	if err := sessionkeys.ValidateState(state); err != nil {
+		return
+	}
+	// PoS expiry cleanup also precedes the EthPoW-support early return below.
+	sessionkeys.Cleanup(state, header.Number.Uint64())
 	if chain.Config().EthPoWForkSupport {
+		header.Root = state.IntermediateRoot(true)
 		return
 	}
 	// The block reward is no longer handled here. It's done by the
@@ -361,6 +368,10 @@ func (beacon *Beacon) Finalize(chain consensus.ChainHeaderReader, header *types.
 // FinalizeAndAssemble implements consensus.Engine, setting the final state and
 // assembling the block.
 func (beacon *Beacon) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, txs []*types.Transaction, uncles []*types.Header, receipts []*types.Receipt) (*types.Block, error) {
+	if err := sessionkeys.ValidateState(state); err != nil {
+		return nil, err
+	}
+
 	// FinalizeAndAssemble is different with Prepare, it can be used in both block
 	// generation and verification. So determine the consensus rules by header type.
 	if !beacon.IsPoSHeader(header) {

@@ -257,17 +257,101 @@ var (
 	//
 	// This configuration is intentionally not using keyed fields to force anyone
 	// adding flags to the config to also have to set these fields.
-	AllEthashProtocolChanges = &ChainConfig{big.NewInt(1337), big.NewInt(0), nil, false, big.NewInt(0), common.Hash{}, big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, nil, nil, nil, false, big.NewInt(1337), nil, false, new(EthashConfig), nil}
+	AllEthashProtocolChanges = &ChainConfig{
+		big.NewInt(1337),
+		big.NewInt(0),
+		nil,
+		false,
+		big.NewInt(0),
+		common.Hash{},
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		nil,
+		nil,
+		nil,
+		nil,
+		false,
+		big.NewInt(1337),
+		nil,
+		false,
+		new(EthashConfig),
+		nil,
+	}
 
 	// AllCliqueProtocolChanges contains every protocol change (EIPs) introduced
 	// and accepted by the Ethereum core developers into the Clique consensus.
 	//
 	// This configuration is intentionally not using keyed fields to force anyone
 	// adding flags to the config to also have to set these fields.
-	AllCliqueProtocolChanges = &ChainConfig{big.NewInt(1337), big.NewInt(0), nil, false, big.NewInt(0), common.Hash{}, big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, nil, nil, nil, nil, nil, false, big.NewInt(1337), nil, false, nil, &CliqueConfig{Period: 0, Epoch: 30000}}
+	AllCliqueProtocolChanges = &ChainConfig{
+		big.NewInt(1337),
+		big.NewInt(0),
+		nil,
+		false,
+		big.NewInt(0),
+		common.Hash{},
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		false,
+		big.NewInt(1337),
+		nil,
+		false,
+		nil,
+		&CliqueConfig{Period: 0, Epoch: 30000},
+	}
 
-	TestChainConfig = &ChainConfig{big.NewInt(1), big.NewInt(0), nil, false, big.NewInt(0), common.Hash{}, big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, nil, nil, nil, false, big.NewInt(1), nil, false, new(EthashConfig), nil}
-	TestRules       = TestChainConfig.Rules(new(big.Int), false)
+	TestChainConfig = &ChainConfig{
+		big.NewInt(1),
+		big.NewInt(0),
+		nil,
+		false,
+		big.NewInt(0),
+		common.Hash{},
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		big.NewInt(0),
+		nil,
+		nil,
+		nil,
+		nil,
+		false,
+		big.NewInt(1),
+		nil,
+		false,
+		new(EthashConfig),
+		nil,
+	}
+	TestRules = TestChainConfig.Rules(new(big.Int), false)
 )
 
 // NetworkNames are user friendly names to use in the chain spec banner.
@@ -594,6 +678,11 @@ func (c *ChainConfig) CheckCompatible(newcfg *ChainConfig, height uint64) *Confi
 // CheckConfigForkOrder checks that we don't "skip" any forks, geth isn't pluggable enough
 // to guarantee that forks can be implemented in a different order than on official networks
 func (c *ChainConfig) CheckConfigForkOrder() error {
+	if c.ChainID == nil || c.ChainID.Sign() < 0 || c.ChainID.BitLen() > 256 ||
+		(c.EthPoWForkBlock != nil &&
+			(c.ChainID_ALT == nil || c.ChainID_ALT.Sign() < 0 || c.ChainID_ALT.BitLen() > 256)) {
+		return fmt.Errorf("native Aplo requires a uint256 chain ID signing domain")
+	}
 	type fork struct {
 		name     string
 		block    *big.Int
@@ -642,6 +731,15 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 }
 
 func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head *big.Int) *ConfigCompatError {
+	// Native acceptance signatures use chain ID from genesis, independently of
+	// the EIP158 schedule. The existing EthPoW fork selects the alternate domain.
+	if !configNumEqual(c.ChainID, newcfg.ChainID) {
+		return newCompatError("Chain ID", common.Big0, common.Big0)
+	}
+	if (c.IsEthPoWFork(head) || newcfg.IsEthPoWFork(head)) &&
+		!configNumEqual(c.ChainID_ALT, newcfg.ChainID_ALT) {
+		return newCompatError("EthPoW chain ID", c.EthPoWForkBlock, newcfg.EthPoWForkBlock)
+	}
 	if isForkIncompatible(c.HomesteadBlock, newcfg.HomesteadBlock, head) {
 		return newCompatError("Homestead fork block", c.HomesteadBlock, newcfg.HomesteadBlock)
 	}

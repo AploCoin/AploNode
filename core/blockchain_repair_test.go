@@ -1782,17 +1782,21 @@ func testRepair(t *testing.T, tt *rewindTest, snapshots bool) {
 	if err != nil {
 		t.Fatalf("Failed to create chain: %v", err)
 	}
+	// The native genesis has protocol state, so the isolated generator database
+	// must contain that same genesis trie before constructing either branch.
+	generatorDB := rawdb.NewMemoryDatabase()
+	(&Genesis{BaseFee: big.NewInt(params.InitialBaseFee)}).MustCommit(generatorDB)
 	// If sidechain blocks are needed, make a light chain and import it
 	var sideblocks types.Blocks
 	if tt.sidechainBlocks > 0 {
-		sideblocks, _ = GenerateChain(params.TestChainConfig, genesis, engine, rawdb.NewMemoryDatabase(), tt.sidechainBlocks, func(i int, b *BlockGen) {
+		sideblocks, _ = GenerateChain(params.TestChainConfig, genesis, engine, generatorDB, tt.sidechainBlocks, func(i int, b *BlockGen) {
 			b.SetCoinbase(common.Address{0x01})
 		})
 		if _, err := chain.InsertChain(sideblocks); err != nil {
 			t.Fatalf("Failed to import side chain: %v", err)
 		}
 	}
-	canonblocks, _ := GenerateChain(params.TestChainConfig, genesis, engine, rawdb.NewMemoryDatabase(), tt.canonicalBlocks, func(i int, b *BlockGen) {
+	canonblocks, _ := GenerateChain(params.TestChainConfig, genesis, engine, generatorDB, tt.canonicalBlocks, func(i int, b *BlockGen) {
 		b.SetCoinbase(common.Address{0x02})
 		b.SetDifficulty(big.NewInt(1000000))
 	})
@@ -1902,7 +1906,9 @@ func TestIssue23496(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create chain: %v", err)
 	}
-	blocks, _ := GenerateChain(params.TestChainConfig, genesis, engine, rawdb.NewMemoryDatabase(), 4, func(i int, b *BlockGen) {
+	generatorDB := rawdb.NewMemoryDatabase()
+	(&Genesis{BaseFee: big.NewInt(params.InitialBaseFee)}).MustCommit(generatorDB)
+	blocks, _ := GenerateChain(params.TestChainConfig, genesis, engine, generatorDB, 4, func(i int, b *BlockGen) {
 		b.SetCoinbase(common.Address{0x02})
 		b.SetDifficulty(big.NewInt(1000000))
 	})
