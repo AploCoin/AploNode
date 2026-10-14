@@ -28,5 +28,8 @@ jobs:
       - run: terraform -chdir=infra/terraform fmt -check -recursive
       - run: terraform -chdir=infra/terraform validate
       - run: terraform -chdir=infra/terraform test
-      - run: sh -n infra/terraform/deploy.sh infra/terraform/certbot.sh infra/terraform/gateway/entrypoint.sh
+      - run: |
+          for script in infra/terraform/deploy.sh infra/terraform/certbot.sh infra/terraform/gateway/entrypoint.sh infra/terraform/tests/gateway-smoke.sh; do
+            sh -n "$script"
+          done
       - run: sh infra/terraform/tests/gateway-smoke.sh

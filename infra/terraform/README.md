@@ -186,7 +186,9 @@ terraform -chdir=infra/terraform init -backend=false
 terraform -chdir=infra/terraform fmt -check -recursive
 terraform -chdir=infra/terraform validate
 terraform -chdir=infra/terraform test
-sh -n infra/terraform/deploy.sh infra/terraform/certbot.sh infra/terraform/gateway/entrypoint.sh
+for script in infra/terraform/deploy.sh infra/terraform/certbot.sh infra/terraform/gateway/entrypoint.sh infra/terraform/tests/gateway-smoke.sh; do
+  sh -n "$script"
+done
 ```
 
 The Terraform tests use a mocked Docker provider and `command = plan` throughout.
