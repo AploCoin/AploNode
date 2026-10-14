@@ -47,3 +47,13 @@ profile.cov
 /dashboard/assets/package-lock.json
 
 **/yarn-error.log
+
+# Terraform local state, plans and user-specific settings
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+*.tfvars.json
+crash.log
+crash.*.log

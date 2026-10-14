@@ -1,0 +1,6 @@
+# Local default: RPC through Nginx at http://localhost:8080, WS at /ws.
+name       = "aplo-tf"
+node_count = 1
+
+# Mining is opt-in. This network otherwise has no block producer.
+# miner_addresses = ["0xYOUR_40_HEX_CHARACTER_REWARD_ADDRESS"]

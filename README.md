@@ -4,6 +4,10 @@ Official Golang implementation of the Aplo protocol, based on the EthereumPOW fo
 
 ## Building the source
 
+For a one-command Docker deployment with Terraform, Nginx and optional automatic
+HTTPS, see [the deployment guide](infra/terraform/README.md). It supports a local
+computer or an existing Docker server; it does not provision a cloud VM.
+
 For prerequisites and detailed build instructions please read the [Installation Instructions](https://geth.ethereum.org/docs/install-and-build/installing-geth).
 
 Building `geth` requires both a Go (version 1.16 or later) and a C compiler. You can install

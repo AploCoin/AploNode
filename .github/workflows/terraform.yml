@@ -1,0 +1,32 @@
+name: Terraform deployment checks
+
+on:
+  pull_request:
+    paths:
+      - 'infra/terraform/**'
+      - '.github/workflows/terraform.yml'
+      - '.dockerignore'
+  push:
+    branches: ['master', 'codex/terraform-docker']
+    paths:
+      - 'infra/terraform/**'
+      - '.github/workflows/terraform.yml'
+      - '.dockerignore'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.8'
+      - run: terraform -chdir=infra/terraform init -backend=false -input=false
+      - run: terraform -chdir=infra/terraform fmt -check -recursive
+      - run: terraform -chdir=infra/terraform validate
+      - run: terraform -chdir=infra/terraform test
+      - run: sh -n infra/terraform/deploy.sh infra/terraform/certbot.sh infra/terraform/gateway/entrypoint.sh
+      - run: sh infra/terraform/tests/gateway-smoke.sh

@@ -1,0 +1,10 @@
+# Serve HTTP-01 before the first certificate exists. RPC remains unavailable.
+server {
+    listen 80;
+    server_name ${RPC_DOMAIN};
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/acme;
+        try_files $uri =404;
+    }
+    location / { return 503; }
+}

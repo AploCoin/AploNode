@@ -3,3 +3,12 @@
 build/_workspace
 build/_bin
 tests/testdata
+
+# Never send Git metadata, Terraform state or deployment settings to a build.
+.git
+**/.terraform
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfplan
+**/*.tfvars
+**/*.tfvars.json
