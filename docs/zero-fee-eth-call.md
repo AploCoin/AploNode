@@ -20,6 +20,11 @@ gas-pool limits, native value checks and all session validation still execute.
 Nonzero simulated fees and every real transaction retain the fee-contract call
 and its errors. This does not reinstate blanket error swallowing.
 
+The deeper pre/session/fix comparison and wallet metadata analysis are in
+[APLO / GAplo model audit](asset-model-audit.md). Signed-consensus differences
+introduced by #10 are recorded [separately](decisions/session-fee-consensus.md);
+the user approved keeping #12 RPC-only.
+
 ## Consensus assessment
 
 The only executable production change is the guard around `subGaplo` in
@@ -27,7 +32,7 @@ The only executable production change is the guard around `subGaplo` in
 so signed block processing, block assembly, real fee burning/refunds and session
 budget accounting take exactly the prior branch, even for zero-priced real
 messages. RPC `ToMessage` sets `isFake: true` and simulates on copied state.
-There is no bytecode, genesis, storage-layout, activation-height or signing-domain
+Relative to the merged post-session base, there is no bytecode, genesis, storage-layout, activation-height or signing-domain
 change and no chain-data migration. No consensus change is intended for real
 transactions. The distinction is explicitly tested with both zero and nonzero
 fees, including a funded zero payer that must still return the burn error.
