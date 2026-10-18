@@ -284,9 +284,14 @@ func (st *StateTransition) buyGas() error {
 		return err
 	}
 
-	// Transfer GAplo tokens to 0 for gas payment
-	if err := st.subGaplo(st.payer, mgval); err != nil {
-		return err
+	// A zero-cost RPC simulation has no fee to burn. Its default payer is
+	// the zero address, which canonical GAplo rejects even for takeFee(0).
+	// Keep the fee-contract path unchanged for real transactions (including
+	// zero-priced ones) and for simulations with a nonzero fee.
+	if !st.msg.IsFake() || mgval.Sign() != 0 {
+		if err := st.subGaplo(st.payer, mgval); err != nil {
+			return err
+		}
 	}
 
 	st.gas += st.msg.Gas()

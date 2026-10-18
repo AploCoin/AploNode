@@ -1,5 +1,10 @@
 # Session Keys test record
 
+The 2026-10-18 zero-fee RPC regression fix, fresh security checks, baseline
+failure comparison and native register/stake/mine/revoke evidence are recorded
+in [Zero-fee eth_call regression](zero-fee-eth-call.md). Earlier audit records
+below retain their original source and scope.
+
 This record covers the permanent, native Session Keys protocol. The latest frozen audit source is `b76e10e9d91abaac9feb89d7dfc6a14e2b82e118`, based on parent `2bc7d7af820b9706d242ad6240ce11ff18182742`. Its 17-file production-source manifest hashes to `b6ed703257c7124c86de6cdb273b48767e1d0b0c952af1637b65a5dbb383e3d0`, using `path || NUL || file bytes || NUL` over the sorted paths in `docs/session-keys-production-manifest.txt`. Fresh checks for this source snapshot are recorded first. The earlier snapshot `ed45c62ec6c3cf4827f650378a5911a3d22a398a` and its verification remain below with their original provenance; older fuzz, CLI smoke, and broad-suite results are not presented as fresh checks on `b76e10e9d91abaac9feb89d7dfc6a14e2b82e118`.
 
 ## Fresh frozen audit verification (2026-10-05)
