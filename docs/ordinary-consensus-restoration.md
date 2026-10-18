@@ -61,11 +61,12 @@ probe is not a full-suite pass.
 Forty ordinary vectors cover limited independent APLO/GAplo funds, zero/nonzero
 value, exact/insufficient reservations, price/base-fee/tip variants, legacy,
 dynamic and access-list transactions, APLO/GAplo reads/transfers, creation,
-BALANCE/SELFBALANCE, stake/unstake, owner mining with/without stake, revert/OOG,
+SELFBALANCE, stake/unstake, owner mining with/without stake, revert/OOG,
 intrinsic/nonce/EOA refusal and the active EthPoW DAO-credit branch. Accepted
 execution compares gas, actual fee, asset balances, locked stake, supply, nonce,
 complete logs/bloom, receipt root and final state root. Pool admission is recorded
-separately.
+separately; native HTTP additionally verifies the BALANCE opcode and historical
+proof/account ledgers.
 
 | Historical vector | Pre-session | Merged #10 / RPC-only fix | This candidate |
 |---|---:|---:|---:|
@@ -132,3 +133,21 @@ Real wallet-extension signing remains outside the proved scope: the preceding
 audit found no exposed injected provider on the available Chrome origin. Native
 HTTP/synthetic signing is not described as an actual extension test. Absence of
 that test does not prevent reviewing this consensus candidate.
+
+## Recorded candidate verification
+
+Implementation commit `8fa9399916fe28fa9adc24b582ab38b63723dd75` passed the
+committed-source three-version runner with `--expect pre --native`.
+[Compact evidence](verification/ordinary-consensus-restoration.json) includes
+all 40 case identities/outcomes and both block-vector directions;
+[native lifecycle evidence](verification/consensus-native-session.json) records
+actual synthetic transactions. Full raw output is retained under
+`/private/tmp/aplo-consensus-fix/verified-8fa939991/`.
+
+Fresh checks passed: ordinary/RPC regressions, nested access-list and credit-error
+rollback, session/security sweep, race sweep including core/state and RPC, full
+core/state, full internal/ethapi and params, actual reorg/restart, node builds
+and equivalent-genesis HTTP/native controls. Consensus/miner sweep packages
+compile with no matching focused tests; finalizer parity is exercised in core.
+The preserved known pool fixture failure is recorded separately, not counted
+as a passing full core suite.

@@ -1,5 +1,9 @@
 # APLO / GAplo model and wallet RPC audit — 2026-10-18
 
+This historical record describes RPC-only PR #12 / `0af90c73d`. The later,
+separate [ordinary consensus restoration candidate](ordinary-consensus-restoration.md)
+does not change the scope of that PR.
+
 ## Outcome and scope decision
 
 The two-asset model predates session keys. APLO is native EVM value and the

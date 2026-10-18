@@ -4,7 +4,7 @@ Run from the repository with Python 3 and a working Go toolchain:
 
 ```sh
 python3 examples/asset-audit/compare.py --out /tmp/aplo-asset-audit-new \
-  --go /path/to/go --candidate HEAD --native
+  --go /path/to/go --candidate 0af90c73d --native
 ```
 
 The output directory must not exist. The runner exports exact pre-session

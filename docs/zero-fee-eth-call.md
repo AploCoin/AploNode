@@ -1,5 +1,9 @@
 # Zero-fee eth_call regression (2026-10-18)
 
+This historical record describes RPC-only PR #12 / `0af90c73d`. The later,
+separate [ordinary consensus restoration candidate](ordinary-consensus-restoration.md)
+does not change the scope of that PR.
+
 ## Trigger and fix
 
 After PR #10, an ordinary `eth_call` with no `from` or an explicit zero
