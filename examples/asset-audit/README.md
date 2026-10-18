@@ -19,8 +19,11 @@ balances, configuration, nonce, transactions and beneficiaries. The runner
 asserts equal initial state roots, transaction hashes and genesis hashes. The
 core probe applies signed transactions through pool validation, ApplyTransaction,
 GenerateChain and BlockChain.InsertChain. It exports an actual old-version block
-and attempts to import it with the newer versions. Candidate signed execution
-must exactly match the merged post-session version for these probes.
+and attempts to import it with the newer versions. Default `--expect post` checks the RPC-only candidate against merged post-session
+execution. For the separate consensus restoration use `--expect pre`: accepted
+ordinary execution/receipts must match the historical oracle, rejected calls must
+roll back safely, and old/candidate ordinary and zero-price block vectors import
+in both directions. One explicit stricter pool refusal is classified separately.
 
 Old baseline `core` tests do not compile because they reference removed genesis
 constants. The runner moves unrelated root-package `_test.go` files out of EACH
@@ -47,3 +50,17 @@ because the RPC accepted their hash.
 This checks node requests and native execution. It creates no EIP-1193 adapter
 and does not establish real browser-extension compatibility. See the audit report
 and the separate consensus decision record for interpretation of differences.
+
+For this consensus branch:
+
+```sh
+python3 examples/asset-audit/compare.py --out /tmp/aplo-consensus-audit-new \
+  --go /path/to/go --candidate HEAD --expect pre --native
+```
+
+`--working-tree` is available for development overlays of tracked changes, with
+a patch hash in the output; review evidence should prefer a committed candidate.
+The extended matrix has 40 ordinary cases, complete receipt roots/logs, and an
+ordinary three-block chain plus a separate zero-price block. It asserts both
+positive import directions and negative merged-version controls. The candidate
+does not preserve invalid-call fee leakage or relax session protections.

@@ -85,6 +85,12 @@ func (j *journal) length() int {
 }
 
 type (
+	// Replacing the access list must itself be reversible. Fee execution may
+	// precede a fresh target-call list within a transaction-wide snapshot.
+	accessListResetChange struct {
+		prev *accessList
+	}
+
 	// Changes to the account trie.
 	createObjectChange struct {
 		account *common.Address
@@ -139,6 +145,12 @@ type (
 		slot    *common.Hash
 	}
 )
+
+func (ch accessListResetChange) revert(s *StateDB) {
+	s.accessList = ch.prev
+}
+
+func (ch accessListResetChange) dirtied() *common.Address { return nil }
 
 func (ch createObjectChange) revert(s *StateDB) {
 	delete(s.stateObjects, *ch.account)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -17,6 +18,7 @@ import (
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ethereum/go-ethereum/trie"
 )
 
 func auditInput(sig string, words ...[]byte) []byte {
@@ -45,6 +47,46 @@ func (b *assetAuditChain) StateAt(common.Hash) (*state.StateDB, error) { return 
 func (b *assetAuditChain) SubscribeChainHeadEvent(ch chan<- ChainHeadEvent) event.Subscription {
 	return b.chainHeadFeed.Subscribe(ch)
 }
+
+func auditRawTx(t *testing.T, tx *types.Transaction) string {
+	t.Helper()
+	b, err := tx.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "0x" + common.Bytes2Hex(b)
+}
+func auditMineInput(t *testing.T, db *state.StateDB, config *params.ChainConfig, h *types.Header, from common.Address) []byte {
+	t.Helper()
+	direct := func(data []byte) []byte {
+		copy := db.Copy()
+		context := vm.BlockContext{CanTransfer: CanTransfer, Transfer: Transfer, GetHash: func(uint64) common.Hash { return common.Hash{} }, Coinbase: h.Coinbase, GasLimit: h.GasLimit, BlockNumber: h.Number, Time: new(big.Int).SetUint64(h.Time), Difficulty: h.Difficulty, BaseFee: h.BaseFee}
+		evm := vm.NewEVM(context, vm.TxContext{Origin: from, GasPrice: new(big.Int)}, copy, config, vm.Config{NoBaseFee: true}, nil)
+		out, _, err := evm.Call(types.AccountRef(from), params.GAploContractAddress, data, 1000000, new(big.Int))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	raw := direct(auditInput("miner_params(address)", from[:]))
+	if len(raw) != 128 {
+		t.Fatal("miner params length")
+	}
+	difficulty := new(big.Int).SetBytes(raw[32:64])
+	if difficulty.Sign() == 0 {
+		difficulty.SetBytes(direct(auditInput("DEFAULT_DIFFICULTY()")))
+	}
+	for n := int64(0); n < 1000000; n++ {
+		nonce := common.BigToHash(big.NewInt(n))
+		hash := crypto.Keccak256(from[:], nonce[:], common.LeftPadBytes(difficulty.Bytes(), 32), raw[96:128], raw[64:96])
+		if new(big.Int).SetBytes(hash).Cmp(difficulty) < 0 {
+			return auditInput("mine(bytes32)", nonce[:])
+		}
+	}
+	t.Fatal("bounded mining search exhausted")
+	return nil
+}
+
 func TestAssetComparisonProbe(t *testing.T) {
 	key, err := crypto.HexToECDSA("0123456789012345678901234567890123456789012345678901234567890123")
 	if err != nil {
@@ -80,6 +122,28 @@ func TestAssetComparisonProbe(t *testing.T) {
 		{"zero_price_no_value", 123, 0, to, 0, nil, 0, 100000},
 		{"ethpow_transfer", 123, 500000, to, 7, nil, 2, 100000},
 		{"revert", 123, 500000, probe, 7, nil, 2, 100000},
+		{"dynamic_value", 123, 500000, to, 7, nil, 2, 100000},
+		{"dynamic_cap_exact", 123, 300007, to, 7, nil, 2, 100000},
+		{"dynamic_cap_short", 123, 300006, to, 7, nil, 2, 100000},
+		{"dynamic_zero_tip", 123, 500000, to, 0, nil, 1, 100000},
+		{"access_gaplo_read", 123, 500000, params.GAploContractAddress, 0, auditInput("balanceOf(address)", from[:]), 2, 100000},
+		{"access_value", 123, 500000, to, 7, nil, 2, 100000},
+		{"zero_base_fee", 123, 500000, to, 7, nil, 2, 100000},
+		{"zero_tip", 123, 500000, to, 0, nil, 1, 100000},
+		{"zero_beneficiary", 123, 500000, to, 7, nil, 2, 100000},
+		{"pre_london", 123, 500000, to, 7, nil, 2, 100000},
+		{"unstake", 23, 500000, params.AploContractAddress, 0, auditInput("unstake()"), 2, 100000},
+		{"out_of_gas", 123, 500000, probe, 7, nil, 2, 100000},
+		{"self_balance", 123, 500000, probe, 0, nil, 2, 100000},
+		{"creation", 123, 500000, to, 0, common.FromHex("60006000f3"), 2, 100000},
+		{"nonce_high", 123, 500000, to, 7, nil, 2, 100000},
+		{"nonce_low", 123, 500000, to, 7, nil, 2, 100000},
+		{"sender_code", 123, 500000, to, 7, nil, 2, 100000},
+		{"mine_unstaked", 123, 500000, params.GAploContractAddress, 0, nil, 2, 200000},
+		{"mine_staked", 123, 500000, params.GAploContractAddress, 0, nil, 2, 200000},
+		{"exact_fee_zero_value", 0, 200000, to, 0, nil, 2, 100000},
+		{"aplo_transfer_insufficient", 6, 500000, params.AploContractAddress, 0, auditInput("transfer(address,uint256)", to[:], big.NewInt(7).Bytes()), 2, 100000},
+		{"ethpow_gaplo_read", 123, 500000, params.GAploContractAddress, 0, auditInput("balanceOf(address)", from[:]), 2, 100000},
 		{"intrinsic_short", 123, 500000, to, 7, nil, 2, 20000},
 	}
 	var rows []map[string]interface{}
@@ -94,7 +158,7 @@ func TestAssetComparisonProbe(t *testing.T) {
 		db.SetCode(probe, common.FromHex("60006000fd"))
 		config := *params.TestChainConfig
 		config.LondonBlock = big.NewInt(0)
-		if tc.name == "ethpow_transfer" {
+		if strings.HasPrefix(tc.name, "ethpow_") {
 			config.EthPoWForkBlock = big.NewInt(0)
 			config.ChainID_ALT = config.ChainID
 		}
@@ -103,7 +167,59 @@ func TestAssetComparisonProbe(t *testing.T) {
 		if tc.price == 0 {
 			header.BaseFee = new(big.Int)
 		}
-		tx, err := types.SignTx(types.NewTransaction(0, tc.target, big.NewInt(tc.value), tc.limit, price, tc.data), types.MakeSigner(&config, header.Number), key)
+		data := tc.data
+		nonce := uint64(0)
+		miner := beneficiary
+		switch tc.name {
+		case "zero_base_fee":
+			header.BaseFee = new(big.Int)
+		case "zero_beneficiary":
+			miner = common.Address{}
+			header.Coinbase = miner
+		case "pre_london":
+			config.LondonBlock = nil
+			header.BaseFee = nil
+		case "nonce_high":
+			nonce = 1
+		case "nonce_low":
+			db.SetNonce(from, 1)
+		case "sender_code":
+			db.SetCode(from, []byte{0})
+		case "out_of_gas":
+			db.SetCode(probe, common.FromHex("5b600056"))
+		case "self_balance":
+			db.SetCode(probe, common.FromHex("4760005260206000f3"))
+			db.SetBalance(probe, big.NewInt(77))
+		case "unstake":
+			db.SetBalance(params.AploContractAddress, big.NewInt(100))
+			db.SetState(params.AploContractAddress, auditSlot(from), common.BigToHash(big.NewInt(100)))
+		}
+		if strings.HasPrefix(tc.name, "mine_") {
+			header.Number = big.NewInt(30)
+			if tc.name == "mine_staked" {
+				stake := new(big.Int).Mul(big.NewInt(1000), new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil))
+				db.SetBalance(params.AploContractAddress, stake)
+				db.SetState(params.AploContractAddress, auditSlot(from), common.BigToHash(stake))
+			}
+			data = auditMineInput(t, db, &config, header, from)
+		}
+		unsigned := types.NewTransaction(nonce, tc.target, big.NewInt(tc.value), tc.limit, price, data)
+		if strings.HasPrefix(tc.name, "dynamic_") {
+			cap := big.NewInt(3)
+			tip := big.NewInt(1)
+			if tc.name == "dynamic_zero_tip" {
+				cap = big.NewInt(1)
+				tip = new(big.Int)
+			}
+			unsigned = types.NewTx(&types.DynamicFeeTx{ChainID: config.ChainID, Nonce: nonce, To: &tc.target, Value: big.NewInt(tc.value), Gas: tc.limit, GasFeeCap: cap, GasTipCap: tip, Data: data})
+		}
+		if strings.HasPrefix(tc.name, "access_") {
+			unsigned = types.NewTx(&types.AccessListTx{ChainID: config.ChainID, Nonce: nonce, To: &tc.target, Value: big.NewInt(tc.value), Gas: tc.limit, GasPrice: price, Data: data, AccessList: types.AccessList{{Address: params.GAploContractAddress, StorageKeys: []common.Hash{auditSlot(from), common.HexToHash("0x2")}}}})
+		}
+		if tc.name == "creation" {
+			unsigned = types.NewContractCreation(nonce, big.NewInt(tc.value), tc.limit, price, data)
+		}
+		tx, err := types.SignTx(unsigned, types.MakeSigner(&config, header.Number), key)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -122,15 +238,23 @@ func TestAssetComparisonProbe(t *testing.T) {
 		gp := new(GasPool).AddGas(header.GasLimit)
 		var used uint64
 		db.Prepare(tx.Hash(), 0)
-		rec, execErr := ApplyTransaction(&config, nil, &beneficiary, gp, db, header, tx, &used, vm.Config{}, nil)
-		row := map[string]interface{}{"name": tc.name, "initial_root": initialRoot, "tx_hash": tx.Hash(), "pool_error": poolErr, "native": db.GetBalance(from).String(), "recipient_native": db.GetBalance(to).String(), "gaplo": db.GetState(params.GAploContractAddress, auditSlot(from)).Big().String(), "recipient_gaplo": db.GetState(params.GAploContractAddress, auditSlot(to)).Big().String(), "beneficiary_gaplo": db.GetState(params.GAploContractAddress, auditSlot(beneficiary)).Big().String(), "supply": db.GetState(params.GAploContractAddress, common.HexToHash("0x2")).Big().String(), "dao_native": db.GetBalance(params.MinerDAOAddress).String(), "nonce": db.GetNonce(from), "gas_pool": gp.Gas(), "final_root": db.Copy().IntermediateRoot(false).Hex()}
+		rec, execErr := ApplyTransaction(&config, nil, &miner, gp, db, header, tx, &used, vm.Config{}, nil)
+		row := map[string]interface{}{"name": tc.name, "initial_root": initialRoot, "tx_hash": tx.Hash(), "tx_bytes": auditRawTx(t, tx), "config": config, "header_hash": header.Hash(), "initial_native": tc.native, "initial_gaplo": tc.gas, "pool_error": poolErr, "native": db.GetBalance(from).String(), "recipient_native": db.GetBalance(to).String(), "gaplo": db.GetState(params.GAploContractAddress, auditSlot(from)).Big().String(), "recipient_gaplo": db.GetState(params.GAploContractAddress, auditSlot(to)).Big().String(), "beneficiary_gaplo": db.GetState(params.GAploContractAddress, auditSlot(beneficiary)).Big().String(), "supply": db.GetState(params.GAploContractAddress, common.HexToHash("0x2")).Big().String(), "dao_native": db.GetBalance(params.MinerDAOAddress).String(), "stake": db.GetState(params.AploContractAddress, auditSlot(from)).Big().String(), "locked_native": db.GetBalance(params.AploContractAddress).String(), "nonce": db.GetNonce(from), "gas_pool": gp.Gas(), "surviving_logs": len(db.Logs()), "refund_counter": db.GetRefund(), "final_root": db.Copy().IntermediateRoot(false).Hex()}
 		if execErr != nil {
 			row["execution_error"] = execErr.Error()
 		} else {
 			row["status"] = rec.Status
+			paid, err := tx.AsMessage(types.MakeSigner(&config, header.Number), header.BaseFee)
+			if err != nil {
+				t.Fatal(err)
+			}
+			row["actual_fee"] = new(big.Int).Mul(new(big.Int).SetUint64(rec.GasUsed), paid.GasPrice()).String()
 			row["gas_used"] = rec.GasUsed
 			row["log_count"] = len(rec.Logs)
 			row["logs_bloom"] = common.Bytes2Hex(rec.Bloom.Bytes())
+			row["logs"] = rec.Logs
+			row["receipt_root"] = types.DeriveSha(types.Receipts{rec}, trie.NewStackTrie(nil))
+			row["contract_address"] = rec.ContractAddress
 		}
 		rows = append(rows, row)
 	}
@@ -150,7 +274,22 @@ func TestAssetComparisonProbe(t *testing.T) {
 	disk := rawdb.NewMemoryDatabase()
 	genesis := gen.MustCommit(disk)
 	tx, _ := types.SignTx(types.NewTransaction(0, params.GAploContractAddress, new(big.Int), 100000, big.NewInt(2), auditInput("balanceOf(address)", from[:])), types.MakeSigner(&config, big.NewInt(1)), key)
-	blocks, receipts := GenerateChain(&config, genesis, engine, disk, 1, func(_ int, b *BlockGen) { b.SetCoinbase(beneficiary); b.AddTx(tx) })
+	blocks, receipts := GenerateChain(&config, genesis, engine, disk, 3, func(index int, b *BlockGen) {
+		b.SetCoinbase(beneficiary)
+		if index == 0 {
+			b.AddTx(tx)
+			return
+		}
+		unsigned := types.NewTransaction(1, params.GAploContractAddress, new(big.Int), 100000, big.NewInt(2), auditInput("transfer(address,uint256)", to[:], big.NewInt(10).Bytes()))
+		if index == 2 {
+			unsigned = types.NewTx(&types.AccessListTx{ChainID: config.ChainID, Nonce: 2, To: &to, Value: big.NewInt(7), Gas: 100000, GasPrice: big.NewInt(2), AccessList: types.AccessList{{Address: params.GAploContractAddress, StorageKeys: []common.Hash{auditSlot(from)}}}})
+		}
+		next, err := types.SignTx(unsigned, types.MakeSigner(&config, big.NewInt(int64(index+1))), key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.AddTx(next)
+	})
 	importDB := rawdb.NewMemoryDatabase()
 	gen.MustCommit(importDB)
 	chain, err := NewBlockChain(importDB, nil, &config, engine, vm.Config{}, nil, nil)
@@ -163,9 +302,23 @@ func TestAssetComparisonProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	chainRow := map[string]interface{}{"name": "signed_block_import", "genesis": genesis.Hash(), "root": blocks[0].Root(), "gas_used": receipts[0][0].GasUsed, "imported": true, "block_hash": blocks[0].Hash()}
+	hashes := []common.Hash{}
+	roots := []common.Hash{}
+	receiptRoots := []common.Hash{}
+	gasVector := []uint64{}
+	for i, block := range blocks {
+		hashes = append(hashes, block.Hash())
+		roots = append(roots, block.Root())
+		receiptRoots = append(receiptRoots, block.ReceiptHash())
+		gasVector = append(gasVector, receipts[i][0].GasUsed)
+	}
+	chainRow["block_hashes"] = hashes
+	chainRow["state_roots"] = roots
+	chainRow["receipt_roots"] = receiptRoots
+	chainRow["gas_vector"] = gasVector
 	rows = append(rows, chainRow)
 	if out := os.Getenv("APLO_AUDIT_BLOCK_OUT"); out != "" {
-		raw, err := rlp.EncodeToBytes(blocks[0])
+		raw, err := rlp.EncodeToBytes(blocks)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -173,29 +326,74 @@ func TestAssetComparisonProbe(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if in := os.Getenv("APLO_AUDIT_BLOCK_IN"); in != "" {
-		raw, err := os.ReadFile(in)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var external types.Block
-		if err = rlp.DecodeBytes(raw, &external); err != nil {
-			t.Fatal(err)
-		}
-		otherDB := rawdb.NewMemoryDatabase()
-		gen.MustCommit(otherDB)
-		other, err := NewBlockChain(otherDB, nil, &config, engine, vm.Config{}, nil, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, err = other.InsertChain(types.Blocks{&external})
-		other.Stop()
-		cross := map[string]interface{}{"name": "cross_version_import", "block": external.Hash(), "accepted": err == nil}
-		if err != nil {
-			cross["error"] = err.Error()
-		}
-		rows = append(rows, cross)
+
+	zeroGen := *gen
+	zeroGen.BaseFee = new(big.Int)
+	zeroDisk := rawdb.NewMemoryDatabase()
+	zeroGenesis := zeroGen.MustCommit(zeroDisk)
+	zeroTx, err := types.SignTx(types.NewTransaction(0, to, new(big.Int), 100000, new(big.Int), nil), types.MakeSigner(&config, big.NewInt(1)), key)
+	if err != nil {
+		t.Fatal(err)
 	}
+	zeroBlocks, zeroReceipts := GenerateChain(&config, zeroGenesis, engine, zeroDisk, 1, func(_ int, b *BlockGen) { b.SetCoinbase(beneficiary); b.AddTx(zeroTx) })
+	zeroImport := rawdb.NewMemoryDatabase()
+	zeroGen.MustCommit(zeroImport)
+	zeroChain, err := NewBlockChain(zeroImport, nil, &config, engine, vm.Config{}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = zeroChain.InsertChain(zeroBlocks)
+	zeroChain.Stop()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows = append(rows, map[string]interface{}{"name": "zero_price_block_import", "genesis": zeroGenesis.Hash(), "root": zeroBlocks[0].Root(), "receipt_root": zeroBlocks[0].ReceiptHash(), "block_hash": zeroBlocks[0].Hash(), "gas_used": zeroReceipts[0][0].GasUsed, "log_count": len(zeroReceipts[0][0].Logs), "imported": true})
+	if out := os.Getenv("APLO_AUDIT_ZERO_BLOCK_OUT"); out != "" {
+		raw, err := rlp.EncodeToBytes(zeroBlocks)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = os.WriteFile(out, raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, vector := range []struct {
+		env, name string
+		genesis   *Genesis
+	}{
+		{"APLO_AUDIT_BLOCK_IN", "cross_version_import", gen},
+		{"APLO_AUDIT_ZERO_BLOCK_IN", "cross_version_zero_price_import", &zeroGen},
+	} {
+		if in := os.Getenv(vector.env); in != "" {
+			raw, err := os.ReadFile(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var external types.Blocks
+			if err = rlp.DecodeBytes(raw, &external); err != nil {
+				var single types.Block
+				if err = rlp.DecodeBytes(raw, &single); err != nil {
+					t.Fatal(err)
+				}
+				external = types.Blocks{&single}
+			}
+			otherDB := rawdb.NewMemoryDatabase()
+			vector.genesis.MustCommit(otherDB)
+			other, err := NewBlockChain(otherDB, nil, &config, engine, vm.Config{}, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = other.InsertChain(external)
+			other.Stop()
+			cross := map[string]interface{}{"name": vector.name, "block": external[0].Hash(), "blocks": len(external), "accepted": err == nil}
+			if err != nil {
+				cross["error"] = err.Error()
+			}
+			rows = append(rows, cross)
+		}
+	}
+
 	encoded, err := json.MarshalIndent(rows, "", "  ")
 	if err != nil {
 		t.Fatal(err)

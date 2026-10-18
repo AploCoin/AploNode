@@ -63,3 +63,25 @@ reservation behind before returning a consensus error. New snapshot rollback
 prevents this. These probe observations are not proof that a valid old canonical
 block committed those failed calls; failed block execution is discarded. Keep
 the rollback/security guarantees when considering any separate protocol patch.
+
+## 2026-10-18 — Separate restoration candidate authorized
+
+The user subsequently explicitly requested a separate PR restoring ordinary
+pre-session transaction behavior while retaining session keys and APLO/GAplo.
+This authorizes development and review of the independent consensus candidate;
+it does not authorize merge, deployment, activation or modification of chain data.
+The earlier decision remains the scope boundary of RPC-only PR #12.
+
+The separate candidate restores ordinary target-call access warmth, zero-valued
+refund/tip logs and value-inclusive GAplo reservation. It journals access-list
+replacement so safe rollback is retained. Sessions keep their independent owner
+APLO / GAplo budgets and existing warmth/zero-credit policy. Simulation follows
+ordinary target gas/reservation rules for accurate estimation while retaining
+the zero-fee fake-message burn guard and the actual zero CALLER/ORIGIN.
+
+[Implementation, evidence and compatibility policy](../ordinary-consensus-restoration.md)
+describe the separate candidate. Restoring ordinary execution is intentionally
+incompatible with the altered ordinary blocks produced by merged #10. There is
+no hidden activation height, genesis change, rewind, migration or upgrade claim.
+Existing-network adoption requires a separately reviewed history/genesis and
+coordination decision; the development authorization does not supply those facts.

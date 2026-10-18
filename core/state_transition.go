@@ -191,8 +191,8 @@ func ApplyMessage(evm *vm.EVM, msg Message, gp *GasPool) (*ExecutionResult, erro
 	if rules.IsBerlin {
 		evm.StateDB.PrepareAccessList(msg.From(), msg.To(), vm.ActivePrecompiles(rules), msg.AccessList())
 	}
-	// PrepareAccessList resets journaled warmth, so it must precede this
-	// snapshot and any fee-contract execution that may need to be reverted.
+	// Start a transaction-wide rollback boundary. Subsequent ordinary-call
+	// access-list preparation is journaled, including replacement of the list.
 	snapshot := evm.StateDB.Snapshot()
 	gasBefore := gp.Gas()
 	result, err := NewStateTransition(evm, msg, gp).TransitionDb()
@@ -214,7 +214,9 @@ func (st *StateTransition) to() common.Address {
 // addGaplo refunds GAplo through the root-only canonical credit method.
 func (st *StateTransition) addGaplo(address common.Address, amount *big.Int) ([]byte, error) {
 	// A zero beneficiary burns its tip; canonical GAplo forbids mint-to-zero.
-	if amount.Sign() == 0 || address == (common.Address{}) {
+	// Ordinary zero credits are observable ERC20 logs in the pre-session
+	// protocol. Sessions retain their existing zero-credit suppression.
+	if address == (common.Address{}) || (amount.Sign() == 0 && st.session != nil) {
 		return nil, nil
 	}
 	transferInput := crypto.Keccak256([]byte("refund(address,uint256)"))[0:4]
@@ -276,6 +278,12 @@ func (st *StateTransition) buyGas() error {
 	if st.gasFeeCap != nil {
 		balanceCheck = new(big.Int).SetUint64(st.msg.Gas())
 		balanceCheck = balanceCheck.Mul(balanceCheck, st.gasFeeCap)
+		// Historical ordinary validity additionally reserves value in GAplo.
+		// Value still transfers APLO; delegation deliberately uses independent
+		// owner APLO/value and GAplo/fee balances and allowances.
+		if st.session == nil {
+			balanceCheck.Add(balanceCheck, st.value)
+		}
 	}
 	if have, want := balance, balanceCheck; have.Cmp(want) < 0 {
 		return fmt.Errorf("%w: address %v have %v want %v", ErrInsufficientFunds, st.msg.From().Hex(), have, want)
@@ -326,16 +334,18 @@ func (st *StateTransition) preCheck() error {
 		st.evm.SessionSender = &signer
 		st.evm.SessionValuePayer = &st.payer
 	}
-	rules := st.evm.ChainConfig().Rules(st.evm.Context.BlockNumber, st.evm.Context.Random != nil)
-	intrinsic, err := IntrinsicGas(st.msg.Data(), st.msg.AccessList(), st.msg.To() == nil, rules.IsHomestead, rules.IsIstanbul)
-	if err != nil {
-		return err
-	}
-	if st.msg.Gas() < intrinsic {
-		return ErrIntrinsicGas
-	}
-	if st.state.GetBalance(st.payer).Cmp(st.msg.Value()) < 0 {
-		return ErrInsufficientFundsForTransfer
+	if st.session != nil {
+		rules := st.evm.ChainConfig().Rules(st.evm.Context.BlockNumber, st.evm.Context.Random != nil)
+		intrinsic, err := IntrinsicGas(st.msg.Data(), st.msg.AccessList(), st.msg.To() == nil, rules.IsHomestead, rules.IsIstanbul)
+		if err != nil {
+			return err
+		}
+		if st.msg.Gas() < intrinsic {
+			return ErrIntrinsicGas
+		}
+		if st.state.GetBalance(st.payer).Cmp(st.msg.Value()) < 0 {
+			return ErrInsufficientFundsForTransfer
+		}
 	}
 
 	// Only check transactions that are not fake
@@ -442,6 +452,14 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	// Check clause 6
 	if msg.Value().Sign() > 0 && !st.evm.Context.CanTransfer(st.state, st.payer, msg.Value()) {
 		return nil, fmt.Errorf("%w: address %v", ErrInsufficientFundsForTransfer, msg.From().Hex())
+	}
+	// Ordinary execution historically starts the target with a fresh access
+	// list AFTER unmetered fee purchase. Retaining fee-contract warmth changes
+	// target gas, fees and roots. Journal the reset so outer failure rollback
+	// first restores the fee list, then safely unwinds its earlier slot adds.
+	// Sessions keep the already prepared list and their established gas rules.
+	if st.session == nil && rules.IsBerlin {
+		st.state.PrepareAccessList(msg.From(), msg.To(), vm.ActivePrecompiles(rules), msg.AccessList())
 	}
 
 	var (
