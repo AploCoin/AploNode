@@ -1,87 +1,142 @@
-# AploNode: Terraform + Docker + Nginx
+# AploNode deployment: Docker, Terraform, Nginx and HTTPS
 
-This configuration deploys an isolated Aplo environment on a computer or an
-existing Docker server. Terraform builds the repository's images, starts a
-discovery bootnode and 1–4 nodes, and configures Nginx in front of node1's RPC and
-WebSocket interfaces. A public domain enables Let's Encrypt certificate issuance,
-renewal and Nginx reloads.
+Deploy on an existing Docker host, prepare an empty Ubuntu server, or give the
+[cloud-init module](../cloud-init/README.md) to your VPS provider.
 
-It does not create a cloud VM, install host packages, change DNS/firewall rules or
-migrate an existing blockchain. It uses the repository's built-in native genesis,
-including Session Keys. Existing Docker Compose resources are separate and are
-not adopted or changed.
+## Choose the node profile
 
-## Prerequisites
+| `deployment_mode` | Starts | Blockchain connection |
+| --- | --- | --- |
+| `node` **(default)** | Ordinary full node + Nginx | Syncs the existing Aplo blockchain through `bootstrap_enodes`. No mining and no local bootnode. |
+| `miner` | Full node with mining enabled + Nginx | Syncs the same existing blockchain. Requires one `miner_addresses` reward address per node. |
+| `bootnode` | Discovery bootnode + ordinary node + Nginx | Provides discovery to other servers. Add existing-network seeds to join that network; empty seeds explicitly start a first-network environment. |
 
-- Terraform 1.9.8 or newer, below 2.0; the Docker provider is pinned in
-  `versions.tf` and `.terraform.lock.hcl`.
-- A running Docker Engine with permission to build and run Linux containers.
-  On macOS, start Docker Desktop. On a server, install Docker first and run these
-  commands from a checkout on that server. Terraform uses the default Docker
-  socket or `DOCKER_HOST`; the wrapper also checks `docker info`.
-- Internet access to download base images and Go dependencies during the build.
-  Size the Docker host and disk for the nodes you choose; archive storage grows
-  over time. The first build can take several minutes.
+`node_count` defaults to 1 (maximum 4). The ordinary/miner profiles **refuse an
+unseeded start**: a successfully started isolated chain is not treated as live
+network synchronization. A local bootnode is created only in `bootnode` mode.
 
-Installation: [Terraform](https://developer.hashicorp.com/terraform/install),
-[Docker Engine](https://docs.docker.com/engine/install/).
+`http://pub1.aplocoin.com/` is the operator-provided future network reference.
+It was offline when this configuration was prepared; no public enode or live
+network acceptance has been established. An HTTP URL is an RPC/web address, not
+an enode. Once the node is online, get its public P2P identity via
+`admin.nodeInfo.enode` on its local geth console, verify the advertised IP/port,
+and put the resulting `enode://<128-hex-public-key>@host:30303` in the seed list.
+There is no invented or hardcoded public network identity in these examples.
 
-## One-command local deployment
+## Existing Docker host: one command
+
+Prerequisites: Terraform >= 1.9.8 and < 2.0, a running Linux-container Docker
+Engine with Buildx and Internet access for image/Go dependency downloads. On macOS start
+Docker Desktop. No native Go installation is required.
 
 From the repository root:
 
 ```sh
+cp infra/terraform/terraform.tfvars.example infra/terraform/terraform.tfvars
+# Fill bootstrap_enodes with the live network's P2P addresses, then:
 ./infra/terraform/deploy.sh
 ```
 
-The script initializes Terraform, validates the configuration, prints the exact
-plan and asks for `yes` before applying that saved plan. It cleans up the temporary
-plan and prints the resulting endpoints. Repeat the same command to reconcile
-changes; unchanged inputs should not replace containers.
+The command initializes Terraform, validates settings, prints the plan and asks
+for `yes` before applying the saved plan. Repeat to reconcile changes. For
+unattended automation, `./infra/terraform/deploy.sh --yes` explicitly applies the
+printed plan without a prompt. Do not pass `--yes` until the configuration has
+been reviewed.
 
-Defaults: `http://localhost:8080` for RPC, `ws://localhost:8080/ws` for WebSocket,
-one non-mining node, no TLS/Certbot and no direct node ports on the host. The only
-published local port is Nginx on `127.0.0.1:8080`.
+Default RPC: `http://localhost:8080`; WebSocket: `ws://localhost:8080/ws`.
+Nginx binds loopback. Direct node RPC/WS ports are never published. HTTP/WS expose
+only `eth,net,web3`; accounts are not unlocked.
 
-Verify JSON-RPC after startup:
+### Mining node
 
-```sh
-curl -sS http://localhost:8080 \
-  -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","method":"net_version","params":[],"id":1}'
+```hcl
+deployment_mode = "miner"
+bootstrap_enodes = ["enode://<REAL_PUBLIC_KEY>@pub1.aplocoin.com:30303"]
+miner_addresses = ["0xYOUR_40_HEX_CHARACTER_REWARD_ADDRESS"]
 ```
 
-This is an isolated network. Mining is **off by default**, so it does not produce
-new blocks until a correctly configured miner is enabled. The scripts do not fund
-accounts, allocate mining stake, unlock wallets or manage session signing keys.
-Enabling `miner_addresses` only supplies the mining flags; it does not establish
-that the address meets Aplo's mining/reward requirements.
+Replace placeholders. This enables mining flags and normal synchronization; it
+does not fund accounts, acquire staking/reward eligibility or guarantee block
+production. The existing client's sync and mining rules still apply.
 
-Optional settings:
+### Bootnode + node
+
+Copy `bootnode.tfvars.example`, set this server's real `advertise_ip`, and add
+existing-network seeds if applicable. The bootnode generates a random identity
+once and preserves it in a protected volume. Nodes see only its public ID through
+a separate read-only discovery volume. No shared test private key is used.
+
+After deployment, `terraform -chdir=infra/terraform output -raw bootnode_enode_command`
+prints a command you can run on the Docker host to obtain its public enode. Share
+that enode with other nodes, not the contents of the identity volume.
+
+## Empty server: install and deploy in one command
+
+Supported target: **Ubuntu 22.04 or 24.04 with systemd**, amd64/arm64, root access
+and outbound Internet. Run this on the target server, not on your Mac. This path
+installs packages and starts Docker; it does not rent a server or manage DNS.
+
+Download `bootstrap.sh` from the reviewed release/commit. Prepare a JSON settings
+file using `bootstrap.tfvars.json.example`, filling `bootstrap_enodes` (or choosing
+`bootnode` plus `advertise_ip`). Then run:
 
 ```sh
-cp infra/terraform/terraform.tfvars.example infra/terraform/terraform.tfvars
-# Edit terraform.tfvars, then run deploy.sh again.
+sudo sh bootstrap.sh /root/aplo.tfvars.json FULL_40_CHARACTER_COMMIT_SHA
 ```
 
-For example, set `node_count = 4`. To enable a miner explicitly, put its real
-reward address in `miner_addresses`; the first address controls node1, the next
-node2, etc. There can be no more addresses than nodes.
+The installer:
 
-## Existing server with automatic HTTPS
+1. Checks the supported OS, root privileges, source revision and configuration.
+2. Installs Docker from its official Ubuntu repository, and Terraform 1.9.8 if
+   absent (download checked against HashiCorp's SHA-256 sums).
+3. Checks out that exact source commit in `/opt/aplonode`, refusing to overwrite
+   tracked local edits or a checkout of another repository.
+4. Writes the deployment settings and runs `deploy.sh --yes`, building AploNode,
+   creating containers/volumes/networks and configuring Nginx/optional Certbot.
 
-Prepare the Docker server and clone this repository there. Create an A record
-for the RPC domain pointing to that server. TCP 80 and 443 must be reachable
-from the Internet, unused by another service, and permitted by the host/cloud
-firewall. If an AAAA record exists, IPv6 must work too; otherwise remove that
-record. The module publishes IPv4 ports only, so IPv6 requires separate host
-routing. It does not create DNS records or firewall rules.
+Use a commit containing this deployment code. The optional third argument is a
+GitHub HTTPS repository URL; it is useful for reviewing a fork's commit before
+merge. Existing supported Terraform is reused; an incompatible version fails the
+module's version constraint. No SSH password/private key is needed in Terraform.
+The caller already has server access; SSH login and VM allocation are separate.
 
-```sh
-cp infra/terraform/server.tfvars.example infra/terraform/terraform.tfvars
-```
+For a custom genesis in unattended bootstrap, include a `genesis_json` object in
+the JSON settings. The installer writes it on the target and converts it into
+`genesis_path`. A source-computer path is not automatically copied to the server.
 
-Edit the copied file:
+For a VPS created through a third-party provider, supply the rendered
+[cloud-init user data](../cloud-init/README.md) instead; the same installer runs
+on first boot. No paid provider or VM is selected/created by this repository.
+
+## Network identity, synchronization and ports
+
+`network_id` defaults to 28282. The network ID alone does not establish chain
+identity: genesis, chain ID, consensus rules and client revision must match the
+live network. The default uses this source revision's built-in genesis. If the
+live network has its own genesis, set `genesis_path` to that exact JSON file.
+Startup runs `geth init` against the persisted database; it never deletes data or
+migrates an incompatible chain. A custom genesis does not repair a client whose
+protocol rules differ from the live network.
+
+The current client requires native Session Keys/GAplo genesis state. This is not
+a migration for a legacy running network. Verify the deployed source and genesis
+against the actual network before claiming live-chain synchronization.
+
+Nodes have outbound Internet/P2P access on a Docker bridge. Host TCP/UDP 30303
+is published for node1; subsequent nodes increment the port. The optional
+bootnode publishes UDP 30301. Allow these ports in provider/host firewalls and set
+`advertise_ip` when publishing an address behind NAT. Without `advertise_ip`, an
+ordinary node can still initiate outgoing sync connections. RPC is controlled
+separately by Nginx; enabling P2P does not expose RPC.
+
+`node_subnet` defaults to `172.29.82.0/24`. Change it before deployment if it
+overlaps Docker/VPN networks. Full synchronization with pruning (`gcmode=full`)
+is used. Plan sufficient storage for the live chain. This is a single-host layout,
+not a backup or high-availability design.
+
+## Nginx and automatic HTTPS
+
+Copy `server.tfvars.example`, keep the selected profile/seeds, then configure:
 
 ```hcl
 bind_ip           = "0.0.0.0"
@@ -93,111 +148,79 @@ rpc_allowed_cidrs = ["YOUR_CLIENT_PUBLIC_IPV4/32"]
 acme_staging      = true
 ```
 
-Replace all placeholders, then run the same `./infra/terraform/deploy.sh` command.
-Test with staging first to avoid certificate rate limits. Staging certificates
-are intentionally untrusted. After confirming DNS/challenges, set
-`acme_staging = false` and rerun; the client replaces the staging certificate with
-a production certificate. Do not switch a production deployment back to staging
-as a normal operation.
+A/AAAA records must point to the server and TCP 80/443 must be reachable and
+unused. This module binds IPv4; remove unusable AAAA records or arrange IPv6
+routing separately. DNS and host/provider firewall rules are not changed.
 
-The server endpoints are `https://rpc.your-domain.com` and
-`wss://rpc.your-domain.com/ws`. Nginx allows only the configured client IPv4 CIDRs.
-The IP list applies to both RPC and WebSocket; ACME challenges remain public.
-The client address must be the address seen by Nginx. An extra load balancer or
-proxy needs a separately reviewed real-client-IP configuration; arbitrary
-`X-Forwarded-For` headers are not trusted.
+Before first issuance, HTTP serves ACME challenges and returns 503 for RPC.
+After issuance, HTTP redirects to HTTPS. Certbot retries failures every five
+minutes, checks renewal every twelve hours, and Nginx reloads changed certificates
+within thirty seconds. Staging certificates are untrusted; after testing, set
+`acme_staging = false` and rerun to replace them with trusted production
+certificates. Certificate/ACME state persists across container replacements.
 
-On a fresh deployment, HTTP serves the ACME challenge and returns 503 for RPC
-until a certificate exists. Certbot retries failed issuance every five minutes
-and checks for renewal every twelve hours. Nginx checks for changed certificate
-files every thirty seconds, validates its new configuration and reloads it.
-After issuance, HTTP redirects to HTTPS. Certificate keys are mounted read-only
-into Nginx; neither Nginx nor Certbot has access to the Docker socket.
+Allowed client CIDRs apply to RPC and `/ws`, not ACME challenges. An additional
+load balancer needs its own reviewed real-client-IP configuration. Nginx does not
+trust arbitrary X-Forwarded-For headers. No Docker socket is mounted in Nginx or
+Certbot.
 
-**A successful Terraform apply means the containers were started. It does not
-mean DNS validation, certificate issuance, RPC readiness or mining succeeded.**
-Check logs and the live endpoint from an allowed client:
+## Inspect the running result
 
 ```sh
-docker logs --tail 100 aplo-tf-certbot
-docker logs --tail 100 aplo-tf-nginx
-curl -sS https://rpc.your-domain.com \
-  -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","method":"net_version","params":[],"id":1}'
-```
-
-ACME background behavior follows [Certbot's webroot and renewal workflow](https://eff-certbot.readthedocs.io/en/stable/using.html).
-
-## Resources and configuration
-
-| Resource | Purpose |
-| --- | --- |
-| Node and tools images | Build `geth` and `bootnode` from this checkout using the existing Dockerfiles. Source changes trigger rebuilds. |
-| Nginx image | Build the included HTTP/HTTPS/WebSocket gateway. |
-| Internal Docker network | Connect Aplo peers; do not expose their P2P/RPC ports to the host or outside networks. |
-| Edge Docker network | Give Nginx/Certbot normal Docker connectivity; nodes stay on the internal network. |
-| Bootnode | Peer discovery with the same known **test-only** identity as Compose. It is not a wallet key. |
-| Node containers | Use network ID 28282, the built-in native genesis, full sync and archive storage; only `eth,net,web3` over HTTP/WS. |
-| Nginx container | Proxy RPC `/` to node1:8545 and WebSocket `/ws` to node1:8546. |
-| Certbot container (domain mode) | Issue and renew one domain's certificate using HTTP-01. |
-| Data volumes | One blockchain volume per node; plus certificates, challenge files and ACME working state with HTTPS. |
-
-`variables.tf` lists all settings. `name` defaults to `aplo-tf` to avoid collisions
-with Compose. The node subnet defaults to `172.29.82.0/24`; change `node_subnet`
-before deployment if it overlaps another Docker/VPN network. Fixed internal
-addresses keep the bootnode and Nginx upstream stable across container replacement.
-This single-host layout does not connect multiple servers into one public network
-and is not a production high-availability/backup design.
-
-## Inspection, updates and data
-
-Inspect the infrastructure before changing anything:
-
-```sh
-terraform -chdir=infra/terraform init
 terraform -chdir=infra/terraform plan
 terraform -chdir=infra/terraform show
 terraform -chdir=infra/terraform output
 docker logs --tail 100 aplo-tf-node1
+docker logs --tail 100 aplo-tf-nginx
+# HTTPS profile only:
+docker logs --tail 100 aplo-tf-certbot
 ```
 
-Images can be rebuilt and containers replaced while reusing their named volumes.
-Blockchain and certificate volumes have `prevent_destroy = true`. Consequently,
-`terraform destroy`, reducing `node_count`, disabling an established TLS deployment
-or changing its resource prefix is blocked if it would delete protected volumes.
-Back up the data and explicitly review any such removal; this module provides no
-automatic data-deletion switch. Docker commands can still delete volumes outside
-Terraform, so this is not a backup mechanism.
+Check actual peers and sync progress (use your HTTPS endpoint for a server):
 
-Do not reuse an old database whose genesis lacks native Session Keys/GAplo state;
-the current client rejects it. This configuration does not delete or migrate old
-data. Changing `--networkid` alone would not change the genesis or signing domain.
+```sh
+curl -sS http://localhost:8080 -H 'Content-Type: application/json' \
+  --data '[{"jsonrpc":"2.0","method":"net_peerCount","params":[],"id":1},{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":2},{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":3},{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x0",false],"id":4}]'
+```
 
-Keep the `.terraform.lock.hcl` in Git. Local state, plans and `terraform.tfvars`
-are ignored by Git and excluded from the Docker build context. State can contain
-deployment details; protect and back it up on the target host. Use one state per
-deployment and do not copy the same live state to another Docker host. No remote
-state backend is configured in this initial setup.
+Compare chain ID/genesis hash with a trusted live node, check peer count and
+advancing head height. `eth_syncing=false` alone does not prove successful sync:
+an isolated node can also return false. Terraform apply completion proves only
+resource creation, not live-chain sync, mining readiness or certificate issuance.
 
-## Validation without deploying
+## Data protection and upgrades
+
+One named volume per node stores chain data. Blockchain, bootnode private identity
+and TLS/ACME volumes use `prevent_destroy=true`. Full destruction, reducing node
+count, removing an established bootnode/TLS profile or changing names is blocked
+if it would delete a protected volume. Back up and explicitly review any such
+transition. Docker can still delete volumes outside Terraform; protection is not
+a backup.
+
+The old, unreleased isolated-network draft is not silently migrated to the new
+profiles. Operators who applied that draft must review networking/identity changes
+and preserve their existing data. Existing Compose resources are not adopted.
+
+Keep `.terraform.lock.hcl` in Git. Local state, plans and tfvars are ignored by Git
+and excluded from build contexts. The host's state must be protected/backed up;
+use one state per deployment. No shared remote-state backend is configured.
+
+## Checks without deploying to a server
 
 ```sh
 terraform -chdir=infra/terraform init -backend=false
 terraform -chdir=infra/terraform fmt -check -recursive
 terraform -chdir=infra/terraform validate
 terraform -chdir=infra/terraform test
-for script in infra/terraform/deploy.sh infra/terraform/certbot.sh infra/terraform/gateway/entrypoint.sh infra/terraform/tests/gateway-smoke.sh; do
-  sh -n "$script"
-done
+terraform -chdir=infra/cloud-init init -backend=false
+terraform -chdir=infra/cloud-init test
+sh infra/terraform/tests/node-entrypoint.sh
 ```
 
-The Terraform tests use a mocked Docker provider and `command = plan` throughout.
-They check local defaults, HTTPS configuration, RPC isolation, IP restrictions,
-mining opt-in and invalid inputs **without building images or creating resources**.
-They do not establish Docker runtime, blockchain or live Let's Encrypt acceptance.
-
-With a running Docker daemon, `sh infra/terraform/tests/gateway-smoke.sh` also tests
-real Nginx locally using a dummy backend and self-signed certificates: RPC/WS path
-routing, HTTP-01 bootstrap, HTTPS activation, certificate reload and denied client
-IPs. It uses temporary containers, loopback ports and files, then cleans them up.
-CI runs these checks; they still do not exercise live ACME or an Aplo blockchain.
+Mock-provider tests check all three profiles and reject missing seeds, missing
+mining addresses, unsafe RPC publication and invalid TLS settings. Cloud-init
+tests check immutable revision/config rendering without any provider or VM.
+With Terraform and Docker, `sh infra/terraform/tests/gateway-smoke.sh` checks the
+Docker provider's Buildx image build and real Nginx using
+dummy upstreams and self-signed certificates. CI runs these tests. None establishes
+first-boot installation on a real VPS or synchronization with the offline network.

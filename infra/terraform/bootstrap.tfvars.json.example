@@ -1,0 +1,6 @@
+{
+  "deployment_mode": "node",
+  "bootstrap_enodes": [],
+  "node_count": 1,
+  "name": "aplo-tf"
+}

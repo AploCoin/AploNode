@@ -4,9 +4,10 @@ Official Golang implementation of the Aplo protocol, based on the EthereumPOW fo
 
 ## Building the source
 
-For a one-command Docker deployment with Terraform, Nginx and optional automatic
-HTTPS, see [the deployment guide](infra/terraform/README.md). It supports a local
-computer or an existing Docker server; it does not provision a cloud VM.
+For one-command deployment on an existing Docker host or a fresh Ubuntu server,
+see [the deployment guide](infra/terraform/README.md). Profiles are ordinary node
+(default), mining node and bootnode + node. A [cloud-init module](infra/cloud-init/README.md)
+is available for a provider-created VPS; Nginx and automatic HTTPS are included.
 
 For prerequisites and detailed build instructions please read the [Installation Instructions](https://geth.ethereum.org/docs/install-and-build/installing-geth).
 

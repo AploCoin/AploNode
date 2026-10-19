@@ -1,0 +1,6 @@
+# Discovery service + ordinary node. Replace the public IP with this server's IP.
+deployment_mode = "bootnode"
+advertise_ip = "203.0.113.20"
+# Existing network: list its seeds here. Empty is explicit first-network startup.
+bootstrap_enodes = []
+# RPC stays on loopback; public discovery is UDP 30301, P2P is TCP/UDP 30303.

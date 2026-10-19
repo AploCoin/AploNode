@@ -1,6 +1,12 @@
+# Default profile joins the existing chain; supply P2P seeds once pub1 is online.
+deployment_mode = "node"
+bootstrap_enodes = [] # Required: ["enode://<128-hex-public-key>@pub1.aplocoin.com:30303"]
+# genesis_path = "/absolute/path/to/the-live-network-genesis.json"
+
 # Local default: RPC through Nginx at http://localhost:8080, WS at /ws.
 name       = "aplo-tf"
 node_count = 1
 
 # Mining is opt-in. This network otherwise has no block producer.
+# To mine, also set deployment_mode = "miner".
 # miner_addresses = ["0xYOUR_40_HEX_CHARACTER_REWARD_ADDRESS"]

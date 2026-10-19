@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - 'infra/terraform/**'
+      - 'infra/cloud-init/**'
       - '.github/workflows/terraform.yml'
       - '.dockerignore'
   push:
     branches: ['master', 'codex/terraform-docker']
     paths:
       - 'infra/terraform/**'
+      - 'infra/cloud-init/**'
       - '.github/workflows/terraform.yml'
       - '.dockerignore'
 
@@ -26,10 +28,15 @@ jobs:
           terraform_version: '1.9.8'
       - run: terraform -chdir=infra/terraform init -backend=false -input=false
       - run: terraform -chdir=infra/terraform fmt -check -recursive
+      - run: terraform -chdir=infra/cloud-init init -backend=false -input=false
+      - run: terraform -chdir=infra/cloud-init fmt -check -recursive
+      - run: terraform -chdir=infra/cloud-init validate
+      - run: terraform -chdir=infra/cloud-init test
       - run: terraform -chdir=infra/terraform validate
       - run: terraform -chdir=infra/terraform test
       - run: |
-          for script in infra/terraform/deploy.sh infra/terraform/certbot.sh infra/terraform/gateway/entrypoint.sh infra/terraform/tests/gateway-smoke.sh; do
+          for script in infra/terraform/tests/node-entrypoint.sh infra/terraform/bootstrap.sh infra/terraform/node-entrypoint.sh infra/terraform/deploy.sh infra/terraform/certbot.sh infra/terraform/gateway/entrypoint.sh infra/terraform/tests/gateway-smoke.sh; do
             sh -n "$script"
           done
+      - run: sh infra/terraform/tests/node-entrypoint.sh
       - run: sh infra/terraform/tests/gateway-smoke.sh

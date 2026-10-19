@@ -15,7 +15,34 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 docker network create "$test_id" >/dev/null
-docker build -t "$test_id" "$module_dir/gateway"
+# Exercise the actual Terraform provider Buildx path, not just Docker CLI build.
+mkdir -p "$work/provider"
+cp "$module_dir/.terraform.lock.hcl" "$work/provider/.terraform.lock.hcl"
+cat > "$work/provider/main.tf" <<'TERRAFORM'
+terraform {
+  required_providers {
+    docker = {
+      source = "kreuzwerker/docker"
+      version = "3.6.2"
+    }
+  }
+}
+provider "docker" {}
+variable "image_name" { type = string }
+variable "build_context" { type = string }
+resource "docker_image" "gateway" {
+  name = var.image_name
+  keep_locally = true
+  build {
+    builder = "default"
+    context = var.build_context
+  }
+}
+TERRAFORM
+export TF_VAR_image_name="$test_id:latest" TF_VAR_build_context="$module_dir/gateway"
+terraform -chdir="$work/provider" init -backend=false -input=false
+terraform -chdir="$work/provider" apply -input=false -auto-approve
+unset TF_VAR_image_name TF_VAR_build_context
 cat > "$work/backend.conf" <<'EOF'
 server {
     listen 8545;

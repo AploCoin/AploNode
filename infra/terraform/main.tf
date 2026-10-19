@@ -13,16 +13,23 @@ locals {
   gateway_hash = sha256(join("", [for f in sort(fileset("${path.module}/gateway", "**")) :
     "${f}:${filesha256("${path.module}/gateway/${f}")}"
   ]))
-  # Known test key matches docker-compose.yml. Discovery only, never a wallet.
-  bootnode_enode = "enode://79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8@${cidrhost(var.node_subnet, 2)}:30301"
-  rpc_acl        = length(var.rpc_allowed_cidrs) == 0 ? "" : "${join("\n", [for cidr in var.rpc_allowed_cidrs : "allow ${cidr};"])}\ndeny all;"
+  with_bootnode = var.deployment_mode == "bootnode"
+  rpc_acl       = length(var.rpc_allowed_cidrs) == 0 ? "" : "${join("\n", [for cidr in var.rpc_allowed_cidrs : "allow ${cidr};"])}\ndeny all;"
 }
 
 resource "terraform_data" "settings" {
   lifecycle {
     precondition {
-      condition     = length(var.miner_addresses) <= var.node_count
-      error_message = "miner_addresses cannot exceed node_count."
+      condition     = local.with_bootnode || length(var.bootstrap_enodes) > 0
+      error_message = "node/miner mode requires bootstrap_enodes from the live Aplo network. An HTTP URL is not an enode; an unseeded private chain will not be started silently."
+    }
+    precondition {
+      condition     = !local.with_bootnode || var.advertise_ip != ""
+      error_message = "bootnode mode requires advertise_ip so other servers can discover it."
+    }
+    precondition {
+      condition     = var.deployment_mode == "miner" ? length(var.miner_addresses) == var.node_count : length(var.miner_addresses) == 0
+      error_message = "miner mode requires one reward address per node; node/bootnode modes must not set miner_addresses."
     }
     precondition {
       condition     = !local.tls || (var.acme_email != "" && var.http_port == 80 && var.https_port == 443 && var.bind_ip != "127.0.0.1")
@@ -43,6 +50,7 @@ resource "docker_image" "node" {
   name         = "${var.name}-node:terraform"
   keep_locally = true
   build {
+    builder    = "default"
     context    = local.repo_root
     dockerfile = "Dockerfile"
   }
@@ -54,9 +62,11 @@ resource "docker_image" "node" {
 }
 
 resource "docker_image" "tools" {
+  count        = local.with_bootnode ? 1 : 0
   name         = "${var.name}-tools:terraform"
   keep_locally = true
   build {
+    builder    = "default"
     context    = local.repo_root
     dockerfile = "Dockerfile.alltools"
   }
@@ -71,6 +81,7 @@ resource "docker_image" "gateway" {
   name         = "${var.name}-nginx:terraform"
   keep_locally = true
   build {
+    builder = "default"
     context = abspath("${path.module}/gateway")
   }
   triggers = { source = local.gateway_hash }
@@ -84,7 +95,7 @@ resource "docker_image" "certbot" {
 
 resource "docker_network" "nodes" {
   name     = "${var.name}-nodes"
-  internal = true
+  internal = false
   ipam_config { subnet = var.node_subnet }
 }
 
@@ -104,14 +115,37 @@ resource "docker_volume" "tls_data" {
   lifecycle { prevent_destroy = true }
 }
 
+resource "docker_volume" "bootnode_identity" {
+  count = local.with_bootnode ? 1 : 0
+  name  = "${var.name}-bootnode-identity"
+  lifecycle { prevent_destroy = true }
+}
+
+resource "docker_volume" "bootnode_discovery" {
+  count = local.with_bootnode ? 1 : 0
+  name  = "${var.name}-bootnode-discovery"
+}
+
 resource "docker_container" "bootnode" {
+  count      = local.with_bootnode ? 1 : 0
   name       = "${var.name}-bootnode"
-  image      = docker_image.tools.image_id
-  entrypoint = ["bootnode"]
-  command = [
-    "--nodekeyhex=0000000000000000000000000000000000000000000000000000000000000001",
-    "--addr=:30301", "--verbosity=3"
-  ]
+  image      = docker_image.tools[0].image_id
+  entrypoint = ["/bin/sh", "-ec"]
+  command    = ["umask 077; if [ ! -s /data/nodekey ]; then bootnode --genkey=/data/nodekey; fi; bootnode --nodekey=/data/nodekey --writeaddress > /discovery/node.id.tmp; mv /discovery/node.id.tmp /discovery/node.id; exec bootnode --nodekey=/data/nodekey --addr=:30301 --nat=extip:${var.advertise_ip} --verbosity=3"]
+  volumes {
+    volume_name    = docker_volume.bootnode_identity[0].name
+    container_path = "/data"
+  }
+  volumes {
+    volume_name    = docker_volume.bootnode_discovery[0].name
+    container_path = "/discovery"
+  }
+  ports {
+    internal = 30301
+    external = 30301
+    protocol = "udp"
+    ip       = var.p2p_bind_ip
+  }
   restart = "unless-stopped"
   networks_advanced {
     name         = docker_network.nodes.name
@@ -128,8 +162,9 @@ resource "docker_container" "node" {
   name     = "${var.name}-${each.key}"
   image    = docker_image.node.image_id
   command = concat([
-    "--networkid=28282", "--bootnodes=${local.bootnode_enode}",
-    "--syncmode=full", "--gcmode=archive", "--nat=none", "--discovery.dns=",
+    "--networkid=${var.network_id}",
+    "--syncmode=full", "--gcmode=full", "--nat=${var.advertise_ip == "" ? "none" : "extip:${var.advertise_ip}"}",
+    "--port=${var.p2p_port + each.value}", "--discovery.dns=",
     "--http", "--http.addr=0.0.0.0", "--http.port=8545", "--http.api=eth,net,web3",
     "--http.vhosts=localhost,127.0.0.1${local.tls ? ",${var.rpc_domain}" : ""}",
     "--ws", "--ws.addr=0.0.0.0", "--ws.port=8546", "--ws.api=eth,net,web3",
@@ -138,6 +173,39 @@ resource "docker_container" "node" {
     ], each.value < length(var.miner_addresses) ? [
     "--mine", "--miner.threads=1", "--miner.etherbase=${var.miner_addresses[each.value]}"
   ] : [])
+  env = [
+    "BOOTSTRAP_ENODES=${join(",", var.bootstrap_enodes)}",
+    "BOOTNODE_HOST=${local.with_bootnode ? cidrhost(var.node_subnet, 2) : ""}"
+  ]
+  entrypoint = ["/bin/sh", "/opt/aplo/node-entrypoint.sh"]
+  dynamic "volumes" {
+    for_each = local.with_bootnode ? [1] : []
+    content {
+      volume_name    = docker_volume.bootnode_discovery[0].name
+      container_path = "/bootstrap"
+      read_only      = true
+    }
+  }
+  upload {
+    file    = "/opt/aplo/node-entrypoint.sh"
+    content = file("${path.module}/node-entrypoint.sh")
+  }
+  dynamic "upload" {
+    for_each = var.genesis_path == "" ? [] : [var.genesis_path]
+    content {
+      file    = "/etc/aplo/genesis.json"
+      content = file(upload.value)
+    }
+  }
+  dynamic "ports" {
+    for_each = toset(["tcp", "udp"])
+    content {
+      internal = var.p2p_port + each.value
+      external = var.p2p_port + each.value
+      protocol = ports.value
+      ip       = var.p2p_bind_ip
+    }
+  }
   restart      = "unless-stopped"
   stop_timeout = 60
   volumes {

@@ -9,7 +9,7 @@ variable "name" {
 }
 
 variable "node_count" {
-  description = "Number of Aplo nodes sharing the built-in native genesis."
+  description = "Number of Aplo nodes using the selected network genesis."
   type        = number
   default     = 1
   validation {
@@ -29,7 +29,7 @@ variable "node_subnet" {
 }
 
 variable "miner_addresses" {
-  description = "Optional reward addresses: enables mining on the first N nodes. No account is unlocked."
+  description = "One reward address per node, required only in miner mode. No account is unlocked."
   type        = list(string)
   default     = []
   validation {
@@ -104,5 +104,75 @@ variable "rpc_allowed_cidrs" {
   validation {
     condition     = alltrue([for cidr in var.rpc_allowed_cidrs : can(cidrnetmask(cidr)) && !endswith(cidr, "/0")])
     error_message = "Use specific IPv4 CIDRs, not an unrestricted /0."
+  }
+}
+
+variable "deployment_mode" {
+  description = "node (default): sync the live chain; miner: sync and mine; bootnode: discovery service plus node."
+  type        = string
+  default     = "node"
+  validation {
+    condition     = contains(["node", "miner", "bootnode"], var.deployment_mode)
+    error_message = "Choose node, miner or bootnode."
+  }
+}
+
+variable "bootstrap_enodes" {
+  description = "P2P enodes of the existing Aplo network, not HTTP/RPC URLs. Required for node/miner."
+  type        = list(string)
+  default     = []
+  validation {
+    condition     = alltrue([for enode in var.bootstrap_enodes : can(regex("^enode://[0-9a-fA-F]{128}@[a-zA-Z0-9.-]+:[0-9]{1,5}(\\?discport=[0-9]{1,5})?$", enode))])
+    error_message = "Use full enode://<128-hex-public-key>@host:port P2P addresses."
+  }
+}
+
+variable "network_id" {
+  description = "P2P network ID; this does not choose or change the genesis/chain ID."
+  type        = number
+  default     = 28282
+  validation {
+    condition     = var.network_id > 0 && var.network_id <= 4294967295 && floor(var.network_id) == var.network_id
+    error_message = "network_id must be a positive uint32 integer."
+  }
+}
+
+variable "genesis_path" {
+  description = "Optional local genesis.json matching the live network. Empty uses this source revision's built-in genesis. No migration."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.genesis_path == "" || can(jsondecode(file(var.genesis_path)).config.chainId)
+    error_message = "genesis_path must be readable JSON with config.chainId."
+  }
+}
+
+variable "p2p_bind_ip" {
+  description = "Host IPv4 binding for P2P TCP/UDP only; never publishes direct RPC."
+  type        = string
+  default     = "0.0.0.0"
+  validation {
+    condition     = can(cidrnetmask("${var.p2p_bind_ip}/32"))
+    error_message = "p2p_bind_ip must be IPv4."
+  }
+}
+
+variable "p2p_port" {
+  description = "First node's host/container P2P port; additional nodes increment it. UDP 30301 is reserved for bootnode."
+  type        = number
+  default     = 30303
+  validation {
+    condition     = var.p2p_port >= 1024 && var.p2p_port <= 65532 && floor(var.p2p_port) == var.p2p_port && (var.p2p_port > 30301 || var.p2p_port + 3 < 30301)
+    error_message = "Use a base P2P port 1024..65532 whose four-port range does not overlap 30301."
+  }
+}
+
+variable "advertise_ip" {
+  description = "Public IPv4 advertised to peers. Required for bootnode mode. Empty allows outgoing node sync without a fixed public IP."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.advertise_ip == "" || (can(cidrnetmask("${var.advertise_ip}/32")) && var.advertise_ip != "0.0.0.0")
+    error_message = "advertise_ip must be an IPv4 address other than 0.0.0.0."
   }
 }
