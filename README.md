@@ -2,6 +2,8 @@
 
 Official Golang implementation of the Aplo protocol, based on the EthereumPOW fork.
 
+Native delegation, signing rules and compatibility limits are described in [Session Keys](docs/session-keys.md).
+
 ## Building the source
 
 For prerequisites and detailed build instructions please read the [Installation Instructions](https://geth.ethereum.org/docs/install-and-build/installing-geth).

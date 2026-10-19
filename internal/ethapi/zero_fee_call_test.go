@@ -30,6 +30,8 @@ func TestZeroFeeBalanceCall(t *testing.T) {
 	owner := common.HexToAddress("0xcd086110af6b5c2e81fe9860bd023d1bfc33aeea")
 	key := common.HexToAddress("0xaaaa")
 	db.SetCode(params.GAploContractAddress, common.FromHex(params.GAPLO))
+	// The default Aplo genesis deploys a stub for this legacy builtin.
+	db.SetCode(params.AploContractAddress, []byte{0})
 	db.SetNonce(sessionkeys.Address, 1)
 	db.SetBalance(owner, big.NewInt(123))
 	db.SetNonce(owner, 7)

@@ -214,7 +214,10 @@ func (evm *EVM) Call(caller types.ContractRef, addr common.Address, input []byte
 	_, isBuiltin := builtin.BuiltInContracts[addr]
 
 	if !evm.StateDB.Exist(addr) {
-		if !isPrecompile && !isBuiltin && !evm.isSessionRegistry(addr) && evm.chainRules.IsEIP158 && value.Sign() == 0 {
+		// Ordinary zero-value CALLs to absent accounts retain EIP158's no-op,
+		// including absent legacy builtins. Only delegated execution needs the
+		// native builtin dispatch introduced with session keys.
+		if !isPrecompile && !(isBuiltin && evm.SessionSender != nil) && !evm.isSessionRegistry(addr) && evm.chainRules.IsEIP158 && value.Sign() == 0 {
 			// Calling a non existing account, don't do anything, but ping the tracer
 			if evm.Config.Debug {
 				if evm.depth == 0 {

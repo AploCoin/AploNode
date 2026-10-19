@@ -60,3 +60,33 @@ func TestOrdinaryConsensusGasEstimation(t *testing.T) {
 		}
 	}
 }
+
+func TestOrdinaryAbsentBuiltinRPC(t *testing.T) {
+	db, err := state.New(common.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetCode(params.GAploContractAddress, common.FromHex(params.GAPLO))
+	db.SetNonce(sessionkeys.Address, 1)
+	config := *params.TestChainConfig
+	b := &sessionRPCBackend{backendMock: &backendMock{config: &config, current: &types.Header{Number: big.NewInt(1), GasLimit: 30000000, Difficulty: big.NewInt(1), BaseFee: big.NewInt(1)}}, db: db}
+	before := db.Copy().IntermediateRoot(false)
+	data := hexutil.Bytes(common.FromHex("0xa9059cbb000000000000000000000000000000000000000000000000000000000000b00b0000000000000000000000000000000000000000000000000000000000000007"))
+	zero := common.Address{}
+	owner := common.HexToAddress("0xbeef")
+	for _, from := range []*common.Address{nil, &zero, &owner} {
+		args := TransactionArgs{From: from, To: &params.AploContractAddress, Data: &data}
+		block := rpc.BlockNumberOrHashWithNumber(rpc.LatestBlockNumber)
+		result, err := DoCall(context.Background(), b, args, block, nil, 0, 30000000)
+		if err != nil || result.Err != nil || len(result.ReturnData) != 0 || result.UsedGas != 21356 {
+			t.Fatalf("absent builtin CALL must be an intrinsic-only no-op: %+v %v", result, err)
+		}
+		gas, err := DoEstimateGas(context.Background(), b, args, block, 30000000)
+		if err != nil || gas != 21356 {
+			t.Fatalf("absent builtin estimate=%d err=%v", gas, err)
+		}
+		if db.Copy().IntermediateRoot(false) != before {
+			t.Fatal("absent builtin simulation changed live state")
+		}
+	}
+}
