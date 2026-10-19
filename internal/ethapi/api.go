@@ -1107,6 +1107,14 @@ func DoEstimateGas(ctx context.Context, b Backend, args TransactionArgs, blockNr
 		if args.Value != nil && state.GetBalance(payer).Cmp(args.Value.ToInt()) < 0 {
 			return 0, core.ErrInsufficientFundsForTransfer
 		}
+		// Ordinary execution reserves value in GAplo as well as transferring
+		// native APLO. Cap the search accordingly; sessions use separate assets.
+		if session == nil && args.Value != nil {
+			if available.Cmp(args.Value.ToInt()) < 0 {
+				return 0, core.ErrInsufficientFunds
+			}
+			available.Sub(available, args.Value.ToInt())
+		}
 		if session != nil && available.Cmp(session.GAploSpent) > 0 {
 			available.Set(session.GAploSpent)
 		}

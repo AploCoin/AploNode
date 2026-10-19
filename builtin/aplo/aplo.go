@@ -169,8 +169,12 @@ var fnTransfer types.Function = func(_ types.Blockchain, state types.StateDB, fr
 	amountInt := new(big.Int).SetBytes(amount)
 
 	payer := from.Address()
-	toAddr = sessionkeys.Recipient(state, toAddr)
-	to = common.LeftPadBytes(toAddr.Bytes(), 32)
+	// Preserve the legacy event word unless credit routing actually changes
+	// its recipient; ordinary calldata may contain nonzero address padding.
+	if recipient := sessionkeys.Recipient(state, toAddr); recipient != toAddr {
+		toAddr = recipient
+		to = common.LeftPadBytes(toAddr.Bytes(), 32)
+	}
 	session := sessionkeys.Get(state, from.Address())
 	if session != nil {
 		payer = session.Owner
