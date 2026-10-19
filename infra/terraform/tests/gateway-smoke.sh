@@ -36,6 +36,7 @@ resource "docker_image" "gateway" {
   build {
     builder = "default"
     context = var.build_context
+    dockerfile = "${var.build_context}/Dockerfile"
   }
 }
 TERRAFORM

@@ -52,7 +52,7 @@ resource "docker_image" "node" {
   build {
     builder    = "default"
     context    = local.repo_root
-    dockerfile = "Dockerfile"
+    dockerfile = "${local.repo_root}/Dockerfile"
   }
   triggers = {
     source     = local.source_hash
@@ -68,7 +68,7 @@ resource "docker_image" "tools" {
   build {
     builder    = "default"
     context    = local.repo_root
-    dockerfile = "Dockerfile.alltools"
+    dockerfile = "${local.repo_root}/Dockerfile.alltools"
   }
   triggers = {
     source     = local.source_hash
@@ -81,8 +81,9 @@ resource "docker_image" "gateway" {
   name         = "${var.name}-nginx:terraform"
   keep_locally = true
   build {
-    builder = "default"
-    context = abspath("${path.module}/gateway")
+    builder    = "default"
+    context    = abspath("${path.module}/gateway")
+    dockerfile = abspath("${path.module}/gateway/Dockerfile")
   }
   triggers = { source = local.gateway_hash }
 }
