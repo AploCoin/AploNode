@@ -1,0 +1,22 @@
+{
+  "actual_fee_budget_debit": "931947232636",
+  "balance_calls": 64,
+  "base_fee_burned": "714399782782",
+  "chain_id": "1337",
+  "gas_price": "8259454",
+  "mine": "0x922090affb169cf99c81ae0b20b97fb44d222a79405fb4947ebf50a786a9647f",
+  "mine_gas": 112834,
+  "owner": "0xb9a1177a94a151217baf5fa95bb9f44090a89181",
+  "owner_gaplo_delta": "-702493119736",
+  "owner_mining_reward": "11906663046",
+  "register": "0x37e7dca3b8e99b9e9f2a45767b17bfecae0c12866097bebacc212dfa151c9cf8",
+  "replay_whitelist_revoke_rejected": true,
+  "revoke": "0x3dc9454fe08eb439e247a12feaf08e4d213a98e28ab3ff2bf56701386e547f30",
+  "rpc": "http://127.0.0.1:19945",
+  "session": "0x9e5fbd1845ac383e4b2662e078ee58b443c8fd3f",
+  "simulation_state_unchanged": true,
+  "stake": "0x62fcf1182978dd6b054d320fbee257312ab4cf3f2eb554430f63541b8e9020f2",
+  "synthetic_keys": true,
+  "unfunded_ordinary_rejected": true,
+  "wallet_extension_tested": false
+}
