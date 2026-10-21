@@ -1,0 +1,7 @@
+# Replace with a reviewed commit that contains this deployment code.
+source_commit = "REPLACE_WITH_FULL_40_CHARACTER_COMMIT_SHA"
+deployment = {
+  deployment_mode = "node"
+  bootstrap_enodes = [] # Supply P2P enodes once the live network is available.
+  # Optional: genesis_json = jsondecode(file("/path/to/live-genesis.json"))
+}

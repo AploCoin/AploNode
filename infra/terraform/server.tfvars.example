@@ -1,0 +1,18 @@
+# Default profile joins the existing chain; supply P2P seeds once pub1 is online.
+deployment_mode = "node"
+bootstrap_enodes = [] # Required: ["enode://<128-hex-public-key>@pub1.aplocoin.com:30303"]
+# genesis_path = "/absolute/path/to/the-live-network-genesis.json"
+
+# Copy to terraform.tfvars on an existing Linux Docker server; edit these values.
+name              = "aplo-tf"
+node_count        = 1
+bind_ip           = "0.0.0.0"
+http_port         = 80
+https_port        = 443
+rpc_domain        = "rpc.example.com"
+acme_email        = "admin@example.com"
+rpc_allowed_cidrs = ["203.0.113.10/32"] # Replace with the client's public IPv4.
+acme_staging      = true              # Test DNS first; set false for a trusted certificate.
+
+# To mine, also set deployment_mode = "miner".
+# miner_addresses = ["0xYOUR_40_HEX_CHARACTER_REWARD_ADDRESS"]
